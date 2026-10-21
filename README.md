@@ -14,7 +14,8 @@
   <a href="#概述">📖 概述</a> ·
   <a href="#快速开始">🚀 快速开始</a> ·
   <a href="#样例列表">📦 样例列表</a> ·
-  <a href="https://gitcode.com/cann/cann-recipes-infer/issues">💬 社区讨论</a>
+  <a href="https://gitcode.com/cann/cann-recipes-infer/issues">💬 社区讨论</a> ·
+  <a href="https://etherpad-cann.meeting.osinfra.cn/p/sif-recipes">🗓️ 双周例会</a>
 </p>
 
 ---
@@ -22,46 +23,46 @@
 ## 📰 最新动态
 
 - [2026/10] [Kimi K3](models/kimi_k3/README.md) 在昇腾 950PR/DT 系列上新增 MegaKDA、ReplaySSM、SuperKernel 与 W8A8C8 量化支持，结合多流优化实现 **约 2.8× 推理加速**
-- [2026/10] LongCat-Next 多模态模型在昇腾 Atlas A3 系列完成 NPU 推理适配，支持文本、图像和语音生成。
-- [2026/09] 新增 DeepSeek-V4 Attention-FFN 分离样例：基于 vLLM 和 afd-plugin，提供昇腾 A5 上的 P2P 同步与 Window 异步方案，支持双 microbatch、ACLGraph 和 DSpark
-- [2026/09] DeepSeek-V4.1-Flash 模型在昇腾 950PR/DT 系列上已支持 **单卡推理部署**
-- [2026/09] GLM-5.3-Flash 模型在昇腾 950DT 系列上已支持 **HiF8 推理部署**
-- [2026/09] DeepSeek-V4.1-Flash 模型在昇腾 950PR/DT 系列上已支持 **FP8-FP4 推理部署**，支持多模理解、Engram offload等特性
-- [2026/08] DeepSeek-V4-Flash 模型在昇腾 910B/A3 上已支持 **单卡推理部署**：attention 与热专家基于NPU计算，其余 MoE 专家 offload 到 Kunpeng CPU 并以原生 MXFP4 计算，decode 约 19–22.5 tok/s。**支持CANNLab lite-infer-and-train镜像部署**
-- [2026/08] BaiLing-V3 模型在昇腾 Atlas A2/A3系列上已 **0day 支持推理部署**
-- [2026/07] daVinci-MagiHuman模型在昇腾Atlas A2/A3系列上已支持推理部署
-- [2026/07] Kimi K3 模型在昇腾 950PR/DT 系列上已 **0day 支持推理部署**
-- [2026/07] Ling-2.5 模型在昇腾 950DT 系列上已支持推理部署
-- [2026/07] Hy3 模型在 Atlas A3 系列和昇腾 950PR/DT 系列上已 **0day 支持推理部署**
-- [2026/06] GLM-5.2模型在昇腾Atlas A3系列上已支持推理部署
-- [2026/06] HunyuanVideo 模型在昇腾 950PR/DT 系列上支持 **mxfp8 a8w8 量化** 和 Flash Attention mxfp8 激活值量化
-- [2026/06] DeepSeek-V4 模型在昇腾 950PR/DT 系列上已支持 **HiF8 推理部署**
-- [2026/06] Qwen3.5 模型文生文通路在昇腾 Atlas A3 系列上已完成推理部署
+- [2026/10] [LongCat-Next](models/longcat_next/README.md) 多模态模型在昇腾 Atlas A3 系列完成 NPU 推理适配，支持文本、图像和语音生成。
+- [2026/09] 新增 [DeepSeek-V4 Attention-FFN 分离样例](integration/vllm/dsv4-afd/deepseek_v4_afd_deployment_guide.md)：基于 vLLM 和 afd-plugin，提供昇腾 A5 上的 P2P 同步与 Window 异步方案，支持双 microbatch、ACLGraph 和 DSpark
+- [2026/09] [DeepSeek-V4.1-Flash](integration/vllm/dsv41-flash-single-npu-moe-offload/README.md) 模型在昇腾 950PR/DT 系列上已支持 **单卡推理部署**
+- [2026/09] [GLM-5.3-Flash](models/glm_5_3/README.md) 模型在昇腾 950DT 系列上已支持 **HiF8 推理部署**
+- [2026/09] [DeepSeek-V4.1-Flash](models/deepseek_v4_1/README.md) 模型在昇腾 950PR/DT 系列上已支持 **FP8-FP4 推理部署**，支持多模理解、Engram offload等特性
+- [2026/08] [DeepSeek-V4-Flash](integration/sglang/dsv4-flash-single-npu-moe-offload/README.md) 模型在昇腾 910B/A3 上已支持 **单卡推理部署**：attention 与热专家基于NPU计算，其余 MoE 专家 offload 到 Kunpeng CPU 并以原生 MXFP4 计算，decode 约 19–22.5 tok/s。**支持CANNLab lite-infer-and-train镜像部署**
+- [2026/08] [BaiLing-V3](integration/vllm/ling-3.0-flash/README.md) 模型在昇腾 Atlas A2/A3系列上已 **0day 支持推理部署**
 
 <details>
 <summary>📜 更多历史动态</summary>
 
-- [2026/05] Gemma4-26B-A4B / LongCat-Flash-Lite 模型基于模型优化 Agent，在昇腾 Atlas A2/A3 系列上已完成端到端优化适配，支持推理部署
-- [2026/04] DeepSeek-V4 模型在昇腾 Atlas A3 系列和 950PR/DT 系列上已 **0day 支持推理部署**
-- [2026/03] SANA-Video 模型在昇腾 Atlas A2 系列上已支持推理部署
+- [2026/07] [daVinci-MagiHuman](models/davinci-magihuman/README.md)模型在昇腾Atlas A2/A3系列上已支持推理部署
+- [2026/07] [Kimi K3](models/kimi_k3/README.md) 模型在昇腾 950PR/DT 系列上已 **0day 支持推理部署**
+- [2026/07] [Ling-2.5](models/bailing_2_5/README.md) 模型在昇腾 950DT 系列上已支持推理部署
+- [2026/07] [Hy3](models/hy3/README.md) 模型在 Atlas A3 系列和昇腾 950PR/DT 系列上已 **0day 支持推理部署**
+- [2026/06] [GLM-5.2](models/glm_5_2/README.md)模型在昇腾Atlas A3系列上已支持推理部署
+- [2026/06] [HunyuanVideo](models/hunyuan-video/README.md) 模型在昇腾 950PR/DT 系列上支持 **mxfp8 a8w8 量化** 和 Flash Attention mxfp8 激活值量化
+- [2026/06] [DeepSeek-V4](models/deepseek_v4/README.md) 模型在昇腾 950PR/DT 系列上已支持 **HiF8 推理部署**
+- [2026/06] [Qwen3.5](models/qwen3_5/README.md) 模型文生文通路在昇腾 Atlas A3 系列上已完成推理部署
+- [2026/05] [Gemma4-26B-A4B](models/gemma_4/README.md) / [LongCat-Flash-Lite](models/longcat_flash_lite/README.md) 模型基于模型优化 Agent，在昇腾 Atlas A2/A3 系列上已完成端到端优化适配，支持推理部署
+- [2026/04] [DeepSeek-V4](models/deepseek_v4/README.md) 模型在昇腾 Atlas A3 系列和 950PR/DT 系列上已 **0day 支持推理部署**
+- [2026/03] [SANA-Video](models/sana-video/README.md) 模型在昇腾 Atlas A2 系列上已支持推理部署
 - [2026/03] 模型优化 Agent Skills 已开源，支持 Agent 在昇腾 Atlas A2/A3 系列上完成端到端推理优化部署
-- [2026/03] HunyuanImage-3.0 模型在昇腾 Atlas A2/A3 系列上已支持 EP 推理部署方案
-- [2026/03] Qwen3-8B / Qwen2.5-7B-Instruct 模型在昇腾 Atlas A2/A3 系列上已支持推理部署
-- [2026/02] GLM-5 模型在昇腾 Atlas A3 系列上已支持推理部署
-- [2026/01] Qwen3-next 模型支持 SGLang 框架下序列并行、MTP、GDN 融合算子、W8A8C8 量化
-- [2026/01] HSTU 模型在昇腾 Atlas A2 系列上已支持推理部署
-- [2026/01] DeepSeek-OCR-2 模型在昇腾 Atlas A2 系列上已支持推理部署
-- [2026/01] LongCat-Flash 模型在昇腾 Atlas A3 系列上已支持 **Attention-FFN Disaggregation (AFD)** 部署模式
-- [2025/12] HunyuanImage-3.0 模型在昇腾 Atlas A2/A3 系列上已支持推理部署
-- [2025/12] LongCat-Flash 模型在昇腾 Atlas A3 系列上已支持低时延的推理部署
-- [2025/12] GPT-OSS-20B / GPT-OSS-120B 在昇腾 Atlas A2 系列上已支持推理部署
-- [2025/11] Kimi-K2-Thinking 模型在昇腾 Atlas A3 系列上已 **0day 支持 256K 序列推理部署**，适配原生 W4A16 量化
-- [2025/10] DeepSeek-R1 / Kimi-K2 模型在昇腾 Atlas A3 系列上已支持低时延、高吞吐的推理部署
-- [2025/10] Wan2.2-I2V 模型支持 Ulysses 序列并行、CFG 并行、VAE 并行，推理代码已开源
-- [2025/10] HunyuanVideo 模型支持 Ulysses 序列并行、RingAttention 序列并行、TeaCache 加速，推理代码已开源
-- [2025/10] DeepSeek-V3.2-Exp 模型支持 **W8A8C8 量化**，量化算法和推理代码已开源
-- [2025/10] Qwen3-MoE 模型在昇腾 Atlas A3 系列上已支持推理部署
-- [2025/09] DeepSeek-V3.2-Exp 模型在昇腾 Atlas A3 系列上已 **0day 支持推理部署**
+- [2026/03] [HunyuanImage-3.0](models/hunyuan-image-3.0/README.md) 模型在昇腾 Atlas A2/A3 系列上已支持 EP 推理部署方案
+- [2026/03] [Qwen3-8B](models/qwen/README.md) / [Qwen2.5-7B-Instruct](models/qwen/README.md) 模型在昇腾 Atlas A2/A3 系列上已支持推理部署
+- [2026/02] [GLM-5](models/glm_5/README.md) 模型在昇腾 Atlas A3 系列上已支持推理部署
+- [2026/01] [Qwen3-next](integration/sglang/qwen3-next/README.md) 模型支持 SGLang 框架下序列并行、MTP、GDN 融合算子、W8A8C8 量化
+- [2026/01] [HSTU](models/hstu/README.md) 模型在昇腾 Atlas A2 系列上已支持推理部署
+- [2026/01] [DeepSeek-OCR-2](integration/vllm/deepseek-ocr-2/README.md) 模型在昇腾 Atlas A2 系列上已支持推理部署
+- [2026/01] [LongCat-Flash](models/longcat_flash/README.md) 模型在昇腾 Atlas A3 系列上已支持 **Attention-FFN Disaggregation (AFD)** 部署模式
+- [2025/12] [HunyuanImage-3.0](models/hunyuan-image-3.0/README.md) 模型在昇腾 Atlas A2/A3 系列上已支持推理部署
+- [2025/12] [LongCat-Flash](models/longcat_flash/README.md) 模型在昇腾 Atlas A3 系列上已支持低时延的推理部署
+- [2025/12] [GPT-OSS-20B](models/gpt_oss/README.md) / [GPT-OSS-120B](models/gpt_oss/README.md) 在昇腾 Atlas A2 系列上已支持推理部署
+- [2025/11] [Kimi-K2-Thinking](models/kimi_k2_thinking/README.md) 模型在昇腾 Atlas A3 系列上已 **0day 支持 256K 序列推理部署**，适配原生 W4A16 量化
+- [2025/10] [DeepSeek-R1](models/deepseek_r1/README.md) / [Kimi-K2](models/deepseek_r1/README.md) 模型在昇腾 Atlas A3 系列上已支持低时延、高吞吐的推理部署
+- [2025/10] [Wan2.2-I2V](models/wan2.2-i2v/README.md) 模型支持 Ulysses 序列并行、CFG 并行、VAE 并行，推理代码已开源
+- [2025/10] [HunyuanVideo](models/hunyuan-video/README.md) 模型支持 Ulysses 序列并行、RingAttention 序列并行、TeaCache 加速，推理代码已开源
+- [2025/10] [DeepSeek-V3.2-Exp](models/deepseek_v3_2_exp/README.md) 模型支持 **W8A8C8 量化**，量化算法和推理代码已开源
+- [2025/10] [Qwen3-MoE](models/qwen3_moe/README.md) 模型在昇腾 Atlas A3 系列上已支持推理部署
+- [2025/09] [DeepSeek-V3.2-Exp](models/deepseek_v3_2_exp/README.md) 模型在昇腾 Atlas A3 系列上已 **0day 支持推理部署**
 
 </details>
 
