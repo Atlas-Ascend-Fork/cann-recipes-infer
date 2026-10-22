@@ -30,15 +30,15 @@ model_config:
     enable_sparse_grouplist: True
 
 speculative_config:
-  num_speculative_tokens: 5
+  num_speculative_tokens: 7
   method: "dspark"
   markov_lmhead_tp_size: 8
   draft_model_path: ""
   confidence_threshold: 0.0
 
 data_config:
-  dataset: "default_multimodal"
-  input_truncated_len: 2048
+  dataset: "InfiniteBench"
+  input_truncated_len: 8192
   temperature: 0.0
 
 parallel_config:
@@ -54,5 +54,5 @@ parallel_config:
 scheduler_config:
   block_size: 128
   max_new_tokens: 256
-  max_prefill_tokens: 2048
+  max_prefill_tokens: 8192
   batch_size: 1

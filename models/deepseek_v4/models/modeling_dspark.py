@@ -791,11 +791,11 @@ class DeepseekV4DSparkProposalModel(DeepseekV3ForCausalLM):
         if not target_layer_ids or list(target_layer_ids) != sorted(set(target_layer_ids)):
             raise ValueError("DSpark target layer ids must be unique and strictly increasing.")
         next_n = infer_config.speculative_config.num_speculative_tokens
-        if next_n != config.dspark_block_size:
+        if not isinstance(next_n, int) or next_n <= 0:
             raise ValueError(
-                f"DSpark requires num_speculative_tokens={next_n} equal to "
-                f"dspark_block_size={config.dspark_block_size}."
+                "DSpark requires num_speculative_tokens to be a positive integer."
             )
+        config.dspark_block_size = next_n
         if (isinstance(config.dspark_markov_rank, bool)
                 or not isinstance(config.dspark_markov_rank, int)
                 or config.dspark_markov_rank <= 0):

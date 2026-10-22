@@ -22,7 +22,7 @@ model_config:
     enable_sparse_grouplist: True
 
 speculative_config:
-  num_speculative_tokens: 5
+  num_speculative_tokens: 7
   method: "dspark"
   draft_model_path: ""
   confidence_threshold: 0.0

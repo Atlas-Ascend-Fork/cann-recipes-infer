@@ -679,11 +679,11 @@ class DeepseekV41DSparkProposalModel(DeepseekV41ForCausalLM):
         config.n_mtp_layers = resolve_dspark_proposal_num_layers(config, infer_config)
         target_layer_ids = config.dspark_target_layer_ids
         next_n = infer_config.speculative_config.num_speculative_tokens
-        if next_n != config.dspark_block_size:
+        if not isinstance(next_n, int) or next_n <= 0:
             raise ValueError(
-                f"DSpark requires num_speculative_tokens={next_n} equal to "
-                f"dspark_block_size={config.dspark_block_size}."
+                "DSpark requires num_speculative_tokens to be a positive integer."
             )
+        config.dspark_block_size = next_n
         if (isinstance(config.dspark_markov_rank, bool)
                 or not isinstance(config.dspark_markov_rank, int)
                 or config.dspark_markov_rank <= 0):

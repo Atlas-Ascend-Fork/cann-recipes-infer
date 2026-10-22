@@ -242,7 +242,7 @@ DeepSeek-V4 Flash支持通过DSpark草稿模型一次生成多个Draft Token，�
 | 参数名 | 示例值 | 含义 |
 | --- | --- | --- |
 | `method` | `"dspark"` | 选择DSpark；原生MTP使用 `"mtp"`。 |
-| `num_speculative_tokens` | `5` | 每轮最大候选Token数；`0` 关闭投机推理。启用DSpark时须与权重的 `dspark_block_size` 一致。 |
+| `num_speculative_tokens` | `7` | 每轮最大候选Token数；`0` 关闭投机推理。启用DSpark时优先使用该值，并覆盖权重配置中的 `dspark_block_size`。 |
 | `draft_model_path` | `""` | 草稿权重目录；空字符串复用 `model_config.model_path`。 |
 | `confidence_threshold` | `0.0` | 候选置信度阈值，范围为 `[0, 1]`；`0` 关闭前缀截断。 |
 | `draft_temperature` | 空值 | 草稿采样温度，非负；空值继承请求温度。主模型温度由 `data_config.temperature` 设置。 |
