@@ -25,6 +25,11 @@ from argparse import ArgumentParser
 NUM_BITS_4 = 4
 NUM_BITS_8 = 8
 
+MX_KEEP_TARGETS = [
+    "re:.*shared_experts.*",
+    "re:.*indexer\\.wq_b.*",
+]
+
 
 def generate_ignore_item(num_layers, compress_ratios, kv_source_layers=None, index_source_layers=None):
     """
@@ -68,17 +73,22 @@ def generate_ignore_item(num_layers, compress_ratios, kv_source_layers=None, ind
     return ignore
 
 
-def generate_quant_group(a_num_bits=8, w_num_bits=8, activation_use_clip=False, is_mx=False):
+def generate_quant_group(a_num_bits=8, w_num_bits=8, activation_use_clip=False, is_mx=False,
+                         hif8=False):
     input_group_size = None
     weight_group_size = None
     weight_block_size = None
-    activation_quant_strategy = "group"
-    weight_quant_strategy = "group" if is_mx else "block"
-    # 32: 32 elements has same scale element when mxfp for dsv4
-    # 128: 128 elements has same scale element when fp for dsv4
-    input_group_size = 32 if is_mx else 128
-    weight_group_size = 32 if is_mx else None
-    weight_block_size = "128x128" if not is_mx else None
+    if hif8:
+        activation_quant_strategy = "tensor"
+        weight_quant_strategy = "channel"
+    else:
+        activation_quant_strategy = "group"
+        weight_quant_strategy = "group" if is_mx else "block"
+        # 32: 32 elements has same scale element when mxfp for dsv4
+        # 128: 128 elements has same scale element when fp for dsv4
+        input_group_size = 32 if is_mx else 128
+        weight_group_size = 32 if is_mx else None
+        weight_block_size = "128x128" if not is_mx else None
     quant_group = {"input_activations": {"actorder": None, "block_structure": None, "dynamic": True,
                                          "group_size": input_group_size, "num_bits": a_num_bits,
                                          "observer": "memoryless", "observer_kwargs": {},
@@ -92,7 +102,7 @@ def generate_quant_group(a_num_bits=8, w_num_bits=8, activation_use_clip=False, 
     return quant_group
 
 
-def generate_quant_config(cache_scheme, ignores, w4a8=False, is_mx=False):
+def generate_quant_config(cache_scheme, ignores, w4a8=False, is_mx=False, hif8=False):
     """
     Generate a quantization configuration dictionary based on the specified parameters.
     """
@@ -107,8 +117,13 @@ def generate_quant_config(cache_scheme, ignores, w4a8=False, is_mx=False):
                     "quantization_status": "compressed"}
     quant_config.update(cache_scheme)
     quant_config["config_groups"]["group_0"].update(
-        generate_quant_group(a_num_bits=NUM_BITS_8, w_num_bits=NUM_BITS_8, is_mx=is_mx)
+        generate_quant_group(a_num_bits=NUM_BITS_8, w_num_bits=NUM_BITS_8, is_mx=is_mx, hif8=hif8)
         )
+    if hif8:
+        config_groups["group_2"] = {"targets": list(MX_KEEP_TARGETS)}
+        config_groups["group_2"].update(
+            generate_quant_group(a_num_bits=NUM_BITS_8, w_num_bits=NUM_BITS_8, is_mx=True)
+            )
     if w4a8:
         quant_config["config_groups"]["group_1"].update(
             generate_quant_group(
@@ -120,7 +135,7 @@ def generate_quant_config(cache_scheme, ignores, w4a8=False, is_mx=False):
     return quant_config
 
 
-def main(fp8_path, is_mx=False):
+def main(fp8_path, is_mx=False, hif8=False):
     config_file = os.path.join(fp8_path, 'config.json')
     with open(config_file, "r") as f:
         config = json.load(f)
@@ -139,11 +154,13 @@ def main(fp8_path, is_mx=False):
     quant_ignore_layers = generate_ignore_item(num_layers, compress_ratios,
                                                kv_source_layers, index_source_layers)
     quantization_config = generate_quant_config(
-        cache_scheme, quant_ignore_layers, w4a8=True, is_mx=is_mx)
+        cache_scheme, quant_ignore_layers, w4a8=True, is_mx=is_mx, hif8=hif8)
     config['quantization_config'] = quantization_config
     config['quantization_config']["quant_method"] = "compressed-tensors"
     config['quantization_config']["quantization_status"] = "compressed"
-    if is_mx:
+    if hif8:
+        config['quantization_config']["weight_block_size"] = [128, 128]
+    elif is_mx:
         config['quantization_config']["weight_block_size"] = [1, 32]
 
     with open(config_file, "w") as f:
@@ -156,5 +173,9 @@ if __name__ == "__main__":
     parser.add_argument("--is_mx", action="store_true",
                          help="generate MX group-quantized (group_size 32) config "
                               "instead of the default block fp8 config")
+    parser.add_argument("--hif8", action="store_true",
+                        help="put the attention-side linears and the Engram wkv in a HiF8 "
+                             "W8A8 group; the MoE shared experts and the Indexer wq_b stay "
+                             "MXFP8 W8A8 and the routed experts stay MXFP4 W4A8")
     args = parser.parse_args()
-    main(args.input_fp8_hf_path, is_mx=args.is_mx)
+    main(args.input_fp8_hf_path, is_mx=args.is_mx, hif8=args.hif8)

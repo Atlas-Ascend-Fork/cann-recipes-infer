@@ -1216,10 +1216,10 @@ class DeepseekV41DSparkProposalModel(DeepseekV41ForCausalLM):
                 continue
             if ".ffn.shared_experts." in name or ".attn." in name or "main_proj." in name:
                 name = name.replace(".scale", ".weight_scale")
-                if name.endswith(".weight_scale"):
+                if name.endswith(".weight_scale") and loaded_weight.dtype == torch.float8_e8m0fnu:
                     # Scales are repeated offline; preserve their E8M0 bits when loading.
                     loaded_weight = loaded_weight.view(torch.uint8)
-            elif name.endswith(".engram.wkv.scale"):
+            elif name.endswith(".engram.wkv.scale") and loaded_weight.dtype == torch.float8_e8m0fnu:
                 loaded_weight = loaded_weight.view(torch.uint8)
 
             for (param_name, weight_name, shard_id) in stacked_params_mapping:

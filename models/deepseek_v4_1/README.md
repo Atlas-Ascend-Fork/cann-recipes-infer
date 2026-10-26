@@ -85,7 +85,7 @@ docker run -u root -itd --name cann_recipes_infer --ulimit nproc=65535:65535 --i
 
 ### 转换权重
 
-DeepSeek-v4.1的原始权重中使用了32x32-block的量化，通过broadcast scale可以将其转化为1x32-group的标准MXFP8量化。在各个节点上进入 `models/deepseek_v4_1` 目录，使用`utils/convert_model.py` 脚本完成 Hybrid FP8-MXFP4 到 Hybrid MXFP8-MXFP4 的权重转换。
+DeepSeek-v4.1的原始权重中使用了32x32-block的量化，通过broadcast scale可以将其转化为1x32-group的标准MXFP8量化。在各个节点上进入 `models/deepseek_v4_1` 目录，使用`utils/convert_model.py` 脚本完成 Hybrid FP8-MXFP4 到 Hybrid MXFP8-MXFP4 或 Hybrid HiF8-MXFP8-MXFP4 的权重转换。
 
   >入参介绍：`input_fp8_hf_path`：原始权重路径；`output_hf_path`：转换后输出的权重路径；
 
@@ -97,8 +97,15 @@ DeepSeek-v4.1的原始权重中使用了32x32-block的量化，通过broadcast s
   ```
 
 权重转换拉起示例：
+
+Hybrid MXFP8-MXFP4
 ```shell
 python utils/convert_model.py --input_fp8_hf_path /data/models/deepseek_v4_1_hybrid_fp8_mxfp4  --output_hf_path /data/models/deepseek_v4_1_hybrid_mxfp8_mxfp4
+```
+
+Hybrid HiF8-MXFP8-MXFP4
+```shell
+python utils/convert_model.py --input_fp8_hf_path /data/models/deepseek_v4_1_hybrid_fp8_mxfp4  --output_hf_path /data/models/deepseek_v4_1_hybrid_hif8_mxfp8_mxfp4 --hif8
 ```
 
 ### 修改配置
@@ -213,6 +220,7 @@ bash executor/scripts/infer.sh
 | 平台  | 模型型号             |  推荐量化策略  | 最小部署单元（chips）|
 |-------|---------------------|--------------|--------------|
 | Ascend 950  | DeepSeek-V4.1 Flash    | Hybrid MXFP8-MXFP4 |8          |
+| Ascend 950  | DeepSeek-V4.1 Flash    | Hybrid HiF8-MXFP8-MXFP4 |8          |
 
 ## vLLM 框架 PD 分离部署
 

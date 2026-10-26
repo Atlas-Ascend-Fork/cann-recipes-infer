@@ -276,14 +276,14 @@ class DeepseekV41SharedExpert(nn.Module):
         swiglu_limit_args = {}
         if self.swiglu_limit is not None:
             swiglu_limit_args["clamp_limit"] = self.swiglu_limit
-        d_limit = 64 if "mx" in self.mm_quant_mode else 256
+        d_limit = 64 if "mx" in self.mm_quant_mode or "hif" in self.mm_quant_mode else 256
         if self.enable_custom_swiglu and merged_x.shape[-1] % d_limit == 0:
             _ensure_custom_swiglu_registered()
             intermediate_hidden_states, pergroup_scale, _ = torch.ops.custom.npu_swiglu_group_quant(
                 merged_x,
                 dst_type=torch.float8_e4m3fn,
-                round_scale=True if "mx" in self.mm_quant_mode else False,
-                quant_mode=1 if "mx" in self.mm_quant_mode else 0,
+                round_scale=True if "mx" in self.mm_quant_mode or "hif" in self.mm_quant_mode else False,
+                quant_mode=1 if "mx" in self.mm_quant_mode or "hif" in self.mm_quant_mode else 0,
                 clamp_limit=self.swiglu_limit,
                 )
             return intermediate_hidden_states, pergroup_scale
@@ -291,8 +291,8 @@ class DeepseekV41SharedExpert(nn.Module):
             intermediate_hidden_states, pergroup_scale, _ = torch.ops.cann_ops_nn.swiglu_group_quant(
                 merged_x,
                 dst_type=torch.float8_e4m3fn,
-                round_scale=True if "mx" in self.mm_quant_mode else False,
-                quant_mode=1 if "mx" in self.mm_quant_mode else 0,
+                round_scale=True if "mx" in self.mm_quant_mode or "hif" in self.mm_quant_mode else False,
+                quant_mode=1 if "mx" in self.mm_quant_mode or "hif" in self.mm_quant_mode else 0,
                 **swiglu_limit_args,
                 )
             return intermediate_hidden_states, pergroup_scale
@@ -995,7 +995,8 @@ class Attention(nn.Module):
             else:
                 wo_tp_size = self.oproj_tp_size
                 wo_tp_rank = self.comm_manager.get_rank("oproj_tp_group")
-            quant_config = config.quant_config if self.mm_quant_mode == "w8a8mxfloat8" else None
+            quant_config = config.quant_config if self.mm_quant_mode in (
+                "w8a8mxfloat8", "w8a8hifloat8") else None
             self.wo_a = ColumnParallelLinear(self.n_heads * self.head_dim // self.n_groups,
                                             self.n_groups * self.o_lora_rank,
                                             params_dtype=torch.bfloat16,
@@ -1294,6 +1295,8 @@ class Attention(nn.Module):
         else:
             o = self.apply_rope(o, attn_metadata, inverse=True)
         o = o.view(num_tokens, self.num_groups_per_rank, -1).to(torch.bfloat16)
+        if self.mm_quant_mode == "w8a8hifloat8":
+            o = torch_npu.npu_dtype_cast(o, dtype=torch_npu.hifloat8)
 
         local_num_tokens = num_tokens
         if self.oproj_tp_size > 1 and self.attn_tp_size == 1:
@@ -1318,6 +1321,15 @@ class Attention(nn.Module):
                                                             x2_scale=self.wo_a.weight_scale.view(torch.float8_e8m0fnu),
                                                             group_sizes=(0, 0, 32), perm_x1=(1, 0, 2),
                                                             perm_x2=(0, 1, 2), perm_y=(1, 0, 2))
+        elif self.mm_quant_mode == "w8a8hifloat8":
+            o = torch_npu.npu_transpose_quant_batchmatmul(o, self.wo_a.weight, dtype=torch_npu.hifloat8,
+                                                            x1_scale=self.wo_a.x_scale,
+                                                            x2_scale=self.wo_a.weight_scale,
+                                                            group_sizes=(0, 0, 0), perm_x1=(1, 0, 2),
+                                                            perm_x2=(0, 1, 2), perm_y=(1, 0, 2),
+                                                            batch_split_factor=1,
+                                                            x1_dtype=torch_npu.hifloat8,
+                                                            x2_dtype=torch_npu.hifloat8)
         else:
             o = torch_npu.npu_transpose_batchmatmul(o, self.wo_a.weight, perm_x1=(1, 0, 2), perm_y=(1, 0, 2))
         if self.oproj_tp_size > 1 and self.attn_tp_size == 1:
@@ -2819,7 +2831,13 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel):
                     scale_data = reshape_mx_scale(module.weight_scale.data)
                     module.weight_scale.data = scale_data.view(-1, config.o_lora_rank, *scale_data.shape[1:]) \
                                                    .transpose(1, 2).contiguous()
-                if enable_weight_nz:
+                elif config.quant_config.mm_quant_mode == "w8a8hifloat8":
+                    scale_data = torch_npu.npu_trans_quant_param(
+                        module.weight_scale.data.to(torch.float32).npu())
+                    module.weight_scale.data = (
+                        scale_data.view(-1, config.o_lora_rank, *scale_data.shape[1:])
+                        .transpose(1, 2)[0, 0].contiguous())
+                if enable_weight_nz and config.quant_config.mm_quant_mode != "w8a8hifloat8":
                     module.weight.data = torch_npu.npu_format_cast(module.weight.data, 29)
                 continue
 
@@ -3397,10 +3415,10 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel):
                 continue
             if ".ffn.shared_experts." in name or ".attn." in name:
                 name = name.replace(".scale", ".weight_scale")
-                if name.endswith(".weight_scale"):
+                if name.endswith(".weight_scale") and loaded_weight.dtype == torch.float8_e8m0fnu:
                     # Scales are repeated offline; preserve their E8M0 bits when loading.
                     loaded_weight = loaded_weight.view(torch.uint8)
-            elif name.endswith(".engram.wkv.scale"):
+            elif name.endswith(".engram.wkv.scale") and loaded_weight.dtype == torch.float8_e8m0fnu:
                 loaded_weight = loaded_weight.view(torch.uint8)
 
             if self.enable_engram_offload and ".engram.embed." in name:
