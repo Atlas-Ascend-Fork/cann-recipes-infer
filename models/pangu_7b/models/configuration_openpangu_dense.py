@@ -1,7 +1,7 @@
 # coding=utf-8
 # Adapted from
 # https://huggingface.co/FreedomIntelligence/openPangu-Embedded-7B/blob/main/configuration_openpangu_dense.py
-# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All rights reserved.
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 # Copyright 2022 EleutherAI and the HuggingFace Inc. team. All rights reserved.
 #
 # This code is based on EleutherAI's GPT-NeoX library and the GPT-NeoX
