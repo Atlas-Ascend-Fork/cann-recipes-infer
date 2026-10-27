@@ -37,7 +37,7 @@ namespace MoeGatingTopKHashRegbaseNS
     {
     public:
         __aicore__ inline MoeGatingTopKHashRegbase(){};
-        __aicore__ inline void Init(GM_ADDR x, GM_ADDR bias, GM_ADDR inputIds, GM_ADDR tid2eid, GM_ADDR additionalBias, GM_ADDR additionalTokenMask,
+        __aicore__ inline void Init(GM_ADDR x, GM_ADDR bias, GM_ADDR inputIds, GM_ADDR tid2eid, GM_ADDR additionalBias, GM_ADDR additionalTokenMask, GM_ADDR tokenMask,
                                     GM_ADDR y, GM_ADDR expertIdx, GM_ADDR out, GM_ADDR workspace,
                                     const MoeGatingTopKHashTilingData *tilingData, TPipe *tPipe);
         __aicore__ inline void Process();
@@ -59,6 +59,7 @@ namespace MoeGatingTopKHashRegbaseNS
         __aicore__ inline void TopKCompute();
         __aicore__ inline void HashCompute(int64_t row);
         __aicore__ inline void CopyOut(int64_t progress);
+        __aicore__ inline void WriteMaskedRow(int64_t row);
 
         __aicore__ inline void TopKGatherWithSmallKAlignE(LocalTensor<float> xSigmoidTensor, LocalTensor<int32_t> mrgSortTensor,
                                                           LocalTensor<int32_t> expertIdxTensor, LocalTensor<T> yTensor, uint32_t k,
@@ -103,6 +104,7 @@ namespace MoeGatingTopKHashRegbaseNS
         GlobalTensor<T> biasGm_;
         GlobalTensor<T> additionalBiasGm_;
         GlobalTensor<bool> additionalTokenMaskGm_;
+        GlobalTensor<bool> tokenMaskGm_;
         GlobalTensor<T> yGm_;
         GlobalTensor<int32_t> expertIdxGm_;
         GlobalTensor<float> outGm_;
@@ -125,6 +127,7 @@ namespace MoeGatingTopKHashRegbaseNS
         bool hasBias_ = false;
         bool hasAdditionalBias_ = false;
         bool hasAdditionalTokenMask_ = false;
+        bool hasTokenMask_ = false;
         bool hashFlag_ = false;
 
         int64_t perGroupExpertCount_;
@@ -1488,8 +1491,47 @@ namespace MoeGatingTopKHashRegbaseNS
     }
 
     template <typename T, typename  U1, typename U2>
+    __aicore__ inline void MoeGatingTopKHashRegbase<T, U1, U2>::WriteMaskedRow(int64_t row)
+    {
+        LocalTensor<T> yOutTensor = yOutQueue_.AllocTensor<T>();
+        LocalTensor<float> yOutFloatTensor = yOutTensor.template ReinterpretCast<float>();
+        Duplicate(yOutFloatTensor, 0.0f, k_);
+        PipeBarrier<PIPE_V>();
+        if constexpr (!IsSameType<T, float>::value) {
+            Cast(yOutTensor, yOutFloatTensor, RoundMode::CAST_NONE, k_);
+            PipeBarrier<PIPE_V>();
+        }
+        yOutQueue_.EnQue<T>(yOutTensor);
+
+        LocalTensor<int32_t> expertIdxTensor = expertIdxOutQueue_.AllocTensor<int32_t>();
+        Duplicate(expertIdxTensor, static_cast<int32_t>(-1), k_);
+        PipeBarrier<PIPE_V>();
+        expertIdxOutQueue_.EnQue<int32_t>(expertIdxTensor);
+
+        if (tilingData_->outFlag != 0) {
+            LocalTensor<float> outOutTensor = outOutQueue_.AllocTensor<float>();
+            Duplicate(outOutTensor, 0.0f, expertCount_);
+            PipeBarrier<PIPE_V>();
+            outOutQueue_.EnQue<float>(outOutTensor);
+            outOutTensor = outOutQueue_.DeQue<float>();
+            DataCopyExtParams outCopyParams{1, static_cast<uint32_t>(expertCount_ * sizeof(float)), 0, 0, 0};
+            DataCopyPad(outGm_[row * expertCount_], outOutTensor, outCopyParams);
+            outOutQueue_.FreeTensor(outOutTensor);
+        }
+
+        yOutTensor = yOutQueue_.DeQue<T>();
+        expertIdxTensor = expertIdxOutQueue_.DeQue<int32_t>();
+        DataCopyExtParams dataCopyParams{1, static_cast<uint32_t>(k_ * sizeof(T)), 0, 0, 0};
+        DataCopyPad(yGm_[row * k_], yOutTensor, dataCopyParams);
+        dataCopyParams.blockLen = k_ * sizeof(int32_t);
+        DataCopyPad(expertIdxGm_[row * k_], expertIdxTensor, dataCopyParams);
+        yOutQueue_.FreeTensor(yOutTensor);
+        expertIdxOutQueue_.FreeTensor(expertIdxTensor);
+    }
+
+    template <typename T, typename  U1, typename U2>
     __aicore__ inline void MoeGatingTopKHashRegbase<T, U1, U2>::Init(GM_ADDR x, GM_ADDR bias, GM_ADDR inputIds, GM_ADDR tid2eid, GM_ADDR additionalBias,
-                                                     GM_ADDR additionalTokenMask, GM_ADDR y, GM_ADDR expertIdx, GM_ADDR out,
+                                                     GM_ADDR additionalTokenMask, GM_ADDR tokenMask, GM_ADDR y, GM_ADDR expertIdx, GM_ADDR out,
                                                      GM_ADDR workspace,
                                                      const MoeGatingTopKHashTilingData *tilingData, TPipe *tPipe)
     {
@@ -1533,6 +1575,11 @@ namespace MoeGatingTopKHashRegbaseNS
             hasAdditionalTokenMask_ = true;
             additionalTokenMaskGm_.SetGlobalBuffer((__gm__ bool *)additionalTokenMask + tilingData_->perCoreRowCount * blockIdx_);
         }
+        if (tokenMask != nullptr)
+        {
+            hasTokenMask_ = true;
+            tokenMaskGm_.SetGlobalBuffer((__gm__ bool *)tokenMask + tilingData_->perCoreRowCount * blockIdx_);
+        }
         yGm_.SetGlobalBuffer((__gm__ T *)y + tilingData_->perCoreRowCount * k_ * blockIdx_, k_);
         expertIdxGm_.SetGlobalBuffer((__gm__ int32_t *)expertIdx + tilingData_->perCoreRowCount * k_ * blockIdx_, k_);
         outGm_.SetGlobalBuffer((__gm__ float *)out + tilingData_->perCoreRowCount * expertCount_ * blockIdx_, expertCount_);
@@ -1570,57 +1617,77 @@ namespace MoeGatingTopKHashRegbaseNS
         CopyInAdditionalBias();
         if (kGroup_ == groupCount_ || groupCount_ == expertCount_)
         {
-            CopyInX(0);
-            for (int64_t row = 1; row < curCoreRowCount_; row++)
+        CopyInX(0);
+        for (int64_t row = 1; row < curCoreRowCount_; row++)
+        {
+            ComputeX(row - 1);
+            CopyInX(row);
+            if (hasTokenMask_ && !tokenMaskGm_.GetValue(row - 1))
             {
-                ComputeX(row - 1);
-                CopyOutXNorm(row - 1);
-                CopyInX(row);
-                if (hashFlag_)
-                {
-                    HashCompute(row - 1 + tilingData_->perCoreRowCount * blockIdx_);
-                }
-                else
-                {
-                    TopKCompute();
-                }
-                CopyOut(row - 1);
+                WriteMaskedRow(row - 1);
+                continue;
             }
-            ComputeX(curCoreRowCount_ - 1);
-            CopyOutXNorm(curCoreRowCount_ - 1);
+            CopyOutXNorm(row - 1);
             if (hashFlag_)
             {
-                HashCompute(curCoreRowCount_ - 1 + tilingData_->perCoreRowCount * blockIdx_);
+                HashCompute(row - 1 + tilingData_->perCoreRowCount * blockIdx_);
             }
             else
             {
                 TopKCompute();
             }
-            CopyOut(curCoreRowCount_ - 1);
-            return;
-        }
-
-        CopyInX(0);
-        for (int64_t row = 1; row < curCoreRowCount_; row++)
-        {
-            ComputeX(row - 1);
-            CopyOutXNorm(row - 1);
-            SortInGroup();
-            SelectTopKGroupIndex();
-            CopyInX(row);
-            FinalSortByKGroup();
-            FinalSortAfterKGroup();
-            SelectTopKExpertScore();
             CopyOut(row - 1);
         }
         ComputeX(curCoreRowCount_ - 1);
+        if (hasTokenMask_ && !tokenMaskGm_.GetValue(curCoreRowCount_ - 1))
+        {
+            WriteMaskedRow(curCoreRowCount_ - 1);
+            return;
+        }
         CopyOutXNorm(curCoreRowCount_ - 1);
+        if (hashFlag_)
+        {
+            HashCompute(curCoreRowCount_ - 1 + tilingData_->perCoreRowCount * blockIdx_);
+        }
+        else
+        {
+            TopKCompute();
+        }
+        CopyOut(curCoreRowCount_ - 1);
+        return;
+    }
+
+    CopyInX(0);
+    for (int64_t row = 1; row < curCoreRowCount_; row++)
+    {
+        ComputeX(row - 1);
+        CopyInX(row);
+        if (hasTokenMask_ && !tokenMaskGm_.GetValue(row - 1))
+        {
+            WriteMaskedRow(row - 1);
+            continue;
+        }
+        CopyOutXNorm(row - 1);
         SortInGroup();
         SelectTopKGroupIndex();
         FinalSortByKGroup();
         FinalSortAfterKGroup();
         SelectTopKExpertScore();
-        CopyOut(curCoreRowCount_ - 1);
+        CopyOut(row - 1);
+    }
+    ComputeX(curCoreRowCount_ - 1);
+    if (hasTokenMask_ && !tokenMaskGm_.GetValue(curCoreRowCount_ - 1))
+    {
+        WriteMaskedRow(curCoreRowCount_ - 1);
+        return;
+    }
+    CopyOutXNorm(curCoreRowCount_ - 1);
+    SortInGroup();
+    SelectTopKGroupIndex();
+    FinalSortByKGroup();
+    FinalSortAfterKGroup();
+    SelectTopKExpertScore();
+    CopyOut(curCoreRowCount_ - 1);
     }
 } // namespace MoeGatingTopKHash
 #endif // MOE_GATING_TOP_K_REGBASE_H

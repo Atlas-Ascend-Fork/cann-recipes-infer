@@ -27,6 +27,7 @@ namespace ge {
  * @li bias: A 1D tensor which is "bias" in moe gating topk. The shape is: (E), format supports ND, and data type must be the same as that of x.
  * @li additional_bias: An optional 1D tensor which is the "additional_bias" in moe gating topk. The shape is: (E), format supports ND, and data type must be the same as that of x. It takes effect only when additional_token_mask is also provided: for rows whose additional_token_mask value is true, additional_bias is used instead of bias.
  * @li additional_token_mask: An optional 1D tensor which indicates whether a token uses additional_bias instead of bias. The shape is: (B*S), format supports ND, and data type must be bool.
+ * @li token_mask: An optional 1D tensor which indicates whether a token participates in moe gating. The shape is: (B*S), format supports ND, and data type must be bool. For rows whose mask value is false, the expert_idx output is filled with k values of -1, and the y and out outputs of these rows are invalid. For rows whose token_mask value is true, the computation is the same as the original logic.
  *
    * @par Outputs:
    * @li y: A 2D tensor which is the topk value result of moe gating topk, format supports ND, and data type must be the same as that of x.
@@ -53,6 +54,7 @@ REG_OP(MoeGatingTopKHash)
     .OPTIONAL_INPUT(tid2eid, TensorType({DT_INT64, DT_INT32}))
     .OPTIONAL_INPUT(additional_bias, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
     .OPTIONAL_INPUT(additional_token_mask, TensorType({DT_BOOL}))
+    .OPTIONAL_INPUT(token_mask, TensorType({DT_BOOL}))
     .OUTPUT(y, TensorType({DT_FLOAT, DT_FLOAT16, DT_BF16}))
     .OUTPUT(expert_idx, TensorType({DT_INT32}))
     .OUTPUT(out, TensorType({DT_FLOAT}))

@@ -56,9 +56,15 @@
     yOut = y / (ReduceSum(y, dim=-1)+eps)*routedScalingFactor
     $$
 
+    如果指定了token_mask，对于token_mask中取值为false的行，不参与上述计算，expertIdxOut中对应行填充k个-1，yOut和out中对应行填0：
+
+    $$
+    expertIdxOut[row, :] = -1,\ where\ token\_mask[row] == False
+    $$
+
 ## 函数原型
 ```
-custom.npu_moe_gating_top_k(Tensor x, int k, *, Tensor? bias=None, Tensor? input_ids=None, Tensor? tid2eid=None, Tensor? additional_bias=None, Tensor? additional_token_mask=None, int k_group=1, int group_count=1, float routed_scaling_factor=1., float eps=9.9999999999999995e-21, int group_select_mode=0, int renorm=0, int norm_type=0, bool out_flag=False) -> (Tensor, Tensor, Tensor)
+custom.npu_moe_gating_top_k(Tensor x, int k, *, Tensor? bias=None, Tensor? input_ids=None, Tensor? tid2eid=None, Tensor? additional_bias=None, Tensor? additional_token_mask=None, Tensor? token_mask=None, int k_group=1, int group_count=1, float routed_scaling_factor=1., float eps=9.9999999999999995e-21, int group_select_mode=0, int renorm=0, int norm_type=0, bool out_flag=False) -> (Tensor, Tensor, Tensor)
 ```
 
 ## 参数说明
@@ -75,6 +81,7 @@ custom.npu_moe_gating_top_k(Tensor x, int k, *, Tensor? bias=None, Tensor? input
 | `tid2eid` | Tensor（可选） | 词表到专家id的映射关系表，shape为（n，k）， 仅支持`int32`，取值范围为[0 ,e]，e代表专家数 |
 | `additional_bias` | Tensor（可选） | 附加偏置张量，shape为（e），dtype与x相同。仅在additional_token_mask同时提供时生效：additional_token_mask为true的行使用additional_bias替换bias参与gating计算 |
 | `additional_token_mask` | Tensor（可选） | 附加token标记，shape为（T），仅支持`bool`，取值为true表示该token使用additional_bias替换bias |
+| `token_mask` | Tensor（可选） | token有效标记，shape为（T），仅支持`bool`。取值为false表示该token不参与gating计算，expert_idx对应行输出k个-1，y和out对应行填0；取值为true表示按原逻辑计算。hash场景下token_mask为false的行不会访问tid2eid，因此input_ids中对应位置的值不要求在[0, n]范围内 |
 | `k_group` | int（可选） | 选取的组数量，默认为1 |
 | `group_count` | int（可选） | 总组数，默认为1 |
 | `routed_scaling_factor` | float（可选） | 路由缩放因子，默认为1 |
@@ -87,9 +94,9 @@ custom.npu_moe_gating_top_k(Tensor x, int k, *, Tensor? bias=None, Tensor? input
 ## 返回值说明
 | 返回值 | 类型 | 描述 |
 |:---|:---|:---|
-| `y` | Tensor | 归一化、分组排序和TopK后的结果 |
-| `expert_idx` | Tensor | 专家索引，数据类型为int32 |
-| `out` | Tensor | 归一化结果（当out_flag=True时有效） |
+| `y` | Tensor | 归一化、分组排序和TopK后的结果；token_mask为false的行填0 |
+| `expert_idx` | Tensor | 专家索引，数据类型为int32；token_mask为false的行填充k个-1 |
+| `out` | Tensor | 归一化结果（当out_flag=True时有效）；token_mask为false的行填0 |
 
 ## 约束说明
 * renorm仅支持0，表示先进行norm操作，再计算topk。
@@ -97,10 +104,12 @@ custom.npu_moe_gating_top_k(Tensor x, int k, *, Tensor? bias=None, Tensor? input
 * norm_type取值0、1和2，0表示使用Softmax函数，1表示使用Sigmoid函数，2表示使用Softplus函数。
 * out_flag取值true和false，true表示输出，false表示不输出。
 * input_ids和tid2eid都不为空表示hash场景，都为空表示topk场景，不允许只有一个为空。
+* input_ids的长度必须与x的行数一致，否则报错。
 * k_group和group_count为1时，表示不分组排序。
 * bias的dtype要和x相同。
 * additional_bias的dtype要和x相同，shape为（e）；additional_token_mask仅支持bool，shape为（T）。
 * additional_bias仅在additional_token_mask同时提供时生效，additional_token_mask为true的行使用additional_bias替换bias。
+* token_mask仅支持bool，shape为（T）。token_mask为false的行expert_idx填充k个-1，y和out的对应行填0；hash场景下token_mask为false的行不访问tid2eid。
 * 该接口支持推理场景下使用。
 * 该接口支持aclgraph入图。
 * 该接口与PyTorch配合使用时，需要保证CANN相关包与PyTorch相关包的版本匹配。

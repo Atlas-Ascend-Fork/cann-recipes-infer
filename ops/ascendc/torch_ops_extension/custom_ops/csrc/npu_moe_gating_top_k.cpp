@@ -20,7 +20,7 @@ const int SIZE = 8;
 
 // 工具函数，推导输出shape
 std::tuple<at::Tensor, at::Tensor> construct_moe_gating_top_k_output_tensor(
-    const at::Tensor& x, 
+    const at::Tensor& x,
     int64_t k, const c10::optional<at::Tensor>& bias,int64_t kGroup, int64_t groupCount, bool outFlag)
 {
     // Check input tensor validity
@@ -64,6 +64,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> npu_moe_gating_top_k_npu(
     const c10::optional<at::Tensor>& tid2eid,
     const c10::optional<at::Tensor>& additional_bias,
     const c10::optional<at::Tensor>& additional_token_mask,
+    const c10::optional<at::Tensor>& token_mask,
     int64_t kGroup,
     int64_t groupCount,
     double routedScalingFactor,
@@ -115,9 +116,24 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> npu_moe_gating_top_k_npu(
         TORCH_CHECK(additional_token_mask_tensor.dtype() == at::kBool, "additional_token_mask dtype only supports bool.");
     }
 
+    // Check mask tensor if provided
+    if (token_mask.has_value()) {
+        const auto& token_mask_tensor = token_mask.value();
+        TORCH_CHECK(token_mask_tensor.sym_numel() > 0, "token_mask tensor should not be empty.");
+        TORCH_CHECK(token_mask_tensor.dim() == 1, "token_mask tensor should be 1-dimensional.");
+        TORCH_CHECK(token_mask_tensor.sym_size(0) == x.sym_numel() / x.sym_size(-1),
+            "token_mask tensor size should match the row number of x. Expected: ",
+            x.sym_numel() / x.sym_size(-1), ", Got: ", token_mask_tensor.sym_size(0));
+        TORCH_CHECK(token_mask_tensor.dtype() == at::kBool, "token_mask dtype only supports bool.");
+    }
+
     if (input_ids.has_value()) {
         const auto& input_ids_tensor = input_ids.value();
         TORCH_CHECK(input_ids_tensor.sym_numel() > 0, "input_ids tensor should not be empty when not null.");
+        TORCH_CHECK(input_ids_tensor.dim() == 1, "input_ids tensor should be 1-dimensional.");
+        TORCH_CHECK(input_ids_tensor.sym_size(0) == x.sym_numel() / x.sym_size(-1),
+            "input_ids tensor size should match the row number of x. Expected: ",
+            x.sym_numel() / x.sym_size(-1), ", Got: ", input_ids_tensor.sym_size(0));
     }
 
     if (tid2eid.has_value()) {
@@ -143,7 +159,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> npu_moe_gating_top_k_npu(
     normOut = at::empty_symint(normOut_shape, x.options().dtype(at::kFloat));
 
     // Execute the NPU operation
-    EXEC_NPU_CMD_V1(aclnnMoeGatingTopKHash, x, bias, input_ids, tid2eid, additional_bias, additional_token_mask, k, kGroup,
+    EXEC_NPU_CMD_V1(aclnnMoeGatingTopKHash, x, bias, input_ids, tid2eid, additional_bias, additional_token_mask, token_mask, k, kGroup,
                     groupCount, groupSelectMode, renorm, normType, outFlag, routedScalingFactor, eps, yOut,
                     expertIdxOut, normOut);
 
@@ -160,6 +176,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> npu_moe_gating_top_k_meta(
     const c10::optional<at::Tensor>& tid2eid,
     const c10::optional<at::Tensor>& additional_bias,
     const c10::optional<at::Tensor>& additional_token_mask,
+    const c10::optional<at::Tensor>& token_mask,
     int64_t kGroup,
     int64_t groupCount,
     double routedScalingFactor,

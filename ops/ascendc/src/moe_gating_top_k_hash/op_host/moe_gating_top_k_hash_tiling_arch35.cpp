@@ -47,6 +47,7 @@ const static int64_t INPUT_IDS_INPUT_INDEX = 2;
 const static int64_t TID_TO_EID_INPUT_INDEX = 3;
 const static int64_t ADDITIONAL_BIAS_INPUT_INDEX = 4;
 const static int64_t ADDITIONAL_TOKEN_MASK_INPUT_INDEX = 5;
+const static int64_t TOKEN_MASK_INPUT_INDEX = 6;
 const static int64_t Y_OUTPUT_INDEX = 0;
 const static int64_t EXPERT_IDX_OUTPUT_INDEX = 1;
 const static int64_t OUT_OUTPUT_INDEX = 2;
@@ -122,6 +123,7 @@ private:
     const gert::Shape *tid2eidShape_ = nullptr;
     const gert::Shape *additionalBiasShape_ = nullptr;
     const gert::Shape *additionalTokenMaskShape_ = nullptr;
+    const gert::Shape *tokenMaskShape_ = nullptr;
 
     ge::DataType inputIdsDtype;
     ge::DataType tid2eidDtype;
@@ -202,11 +204,26 @@ ge::graphStatus MoeGatingTopKHashTilingRegbase::CheckInputShape()
                     return ge::GRAPH_FAILED);
     }
 
+    if (tokenMaskShape_ != nullptr) {
+        size_t tokenMaskDimNum = tokenMaskShape_->GetDimNum();
+        OPS_ERR_IF(tokenMaskDimNum != MASK_INPUT_DIMS,
+                    OPS_LOG_E(context_, "The number of token_mask dim is: %zu, but should be %zu.", tokenMaskDimNum, MASK_INPUT_DIMS),
+                    return ge::GRAPH_FAILED);
+        OPS_ERR_IF(tokenMaskShape_->GetDim(0) != rows_,
+                    OPS_LOG_E(context_, "The first dim of token_mask is: %ld, but should be row num: %ld.",
+                         tokenMaskShape_->GetDim(0), rows_),
+                    return ge::GRAPH_FAILED);
+    }
+
     if (inputIdsShape_ != nullptr) {
         OPS_ERR_IF(
             tid2eidShape_ == nullptr,
             OPS_LOG_E(context_, "The tid2eid should not be empty when inputIds has value."),
             return ge::GRAPH_FAILED);
+        OPS_ERR_IF(inputIdsShape_->GetDim(0) != rows_,
+                    OPS_LOG_E(context_, "The first dim of inputIds is: %ld, but should be row num: %ld.",
+                         inputIdsShape_->GetDim(0), rows_),
+                    return ge::GRAPH_FAILED);
     }
     if (tid2eidShape_ != nullptr) {
         OPS_ERR_IF(
@@ -229,7 +246,7 @@ ge::graphStatus MoeGatingTopKHashTilingRegbase::CheckInputShape()
 ge::graphStatus MoeGatingTopKHashTilingRegbase::CheckAttr()
 {
     OPS_ERR_IF(k_ <= 0, OPS_LOG_E(context_, "k is: %ld, but should be greater than 0.", k_), return ge::GRAPH_FAILED);
-    
+
     OPS_ERR_IF(k_ > 64, OPS_LOG_E(context_, "k is: %ld, but should not be greater than 64.", k_), return ge::GRAPH_FAILED);
 
     OPS_ERR_IF(kGroup_ <= 0, OPS_LOG_E(context_, "k_group is: %ld, but should be greater than 0.", kGroup_),
@@ -314,6 +331,9 @@ ge::graphStatus MoeGatingTopKHashTilingRegbase::GetShapeAttrsInfo()
     auto additionalTokenMaskShapePtr = context_->GetOptionalInputShape(ADDITIONAL_TOKEN_MASK_INPUT_INDEX);
     additionalTokenMaskShape_ = additionalTokenMaskShapePtr == nullptr ? nullptr : &additionalTokenMaskShapePtr->GetStorageShape();
 
+    auto tokenMaskShapePtr = context_->GetOptionalInputShape(TOKEN_MASK_INPUT_INDEX);
+    tokenMaskShape_ = tokenMaskShapePtr == nullptr ? nullptr : &tokenMaskShapePtr->GetStorageShape();
+
     // 获取输出shape
     auto yShapePtr = context_->GetOutputShape(Y_OUTPUT_INDEX);
     OPS_LOG_E_IF_NULL(context_, yShapePtr, return ge::GRAPH_FAILED);
@@ -356,6 +376,13 @@ ge::graphStatus MoeGatingTopKHashTilingRegbase::GetShapeAttrsInfo()
         OPS_ERR_IF((additionalTokenMaskDtype != ge::DataType::DT_BOOL),
                     OPS_LOG_E(context_, "additional token mask dtype %s error, only supports bool. please check.",
                       ge::TypeUtils::DataTypeToSerialString(additionalTokenMaskDtype).c_str()),
+                    return ge::GRAPH_FAILED);
+    }
+    if (tokenMaskShapePtr != nullptr) {
+        auto tokenMaskDtype = context_->GetOptionalInputDesc(TOKEN_MASK_INPUT_INDEX)->GetDataType();
+        OPS_ERR_IF((tokenMaskDtype != ge::DataType::DT_BOOL),
+                    OPS_LOG_E(context_, "token_mask dtype %s error, only supports bool. please check.",
+                      ge::TypeUtils::DataTypeToSerialString(tokenMaskDtype).c_str()),
                     return ge::GRAPH_FAILED);
     }
     if (inputIdsShapePtr != nullptr) {

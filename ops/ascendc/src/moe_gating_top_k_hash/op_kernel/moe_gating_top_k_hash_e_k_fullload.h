@@ -23,7 +23,7 @@ template <typename T>
 class MoeGatingTopKHashEKFullload {
 public:
     __aicore__ inline MoeGatingTopKHashEKFullload(){};
-    __aicore__ inline void Init(GM_ADDR x, GM_ADDR bias, GM_ADDR additionalBias, GM_ADDR additionalTokenMask, GM_ADDR y, GM_ADDR expertIdx,
+    __aicore__ inline void Init(GM_ADDR x, GM_ADDR bias, GM_ADDR additionalBias, GM_ADDR additionalTokenMask, GM_ADDR tokenMask, GM_ADDR y, GM_ADDR expertIdx,
                                 GM_ADDR out, GM_ADDR workspace,
                                 const MoeGatingTopKHashTilingData *tilingData, TPipe *tPipe);
     __aicore__ inline void Process();
@@ -38,6 +38,7 @@ private:
     __aicore__ inline void SelectTopKExpertIdx();
     __aicore__ inline void SelectTopKExpertScore();
     __aicore__ inline void CopyOut(int64_t progress);
+    __aicore__ inline void WriteMaskedRow(int64_t row);
 
 private:
     TPipe *pipe_;
@@ -59,6 +60,7 @@ private:
     GlobalTensor<T> biasGm_;
     GlobalTensor<T> additionalBiasGm_;
     GlobalTensor<bool> additionalTokenMaskGm_;
+    GlobalTensor<bool> tokenMaskGm_;
     GlobalTensor<T> yGm_;
     GlobalTensor<int32_t> expertIdxGm_;
     GlobalTensor<T> outGm_;
@@ -70,6 +72,7 @@ private:
     bool addBias_;
     bool hasAdditionalBias_ = false;
     bool hasAdditionalTokenMask_ = false;
+    bool hasTokenMask_ = false;
     int64_t k_;
     int64_t kGroup_;
     int64_t groupCount_;
@@ -364,7 +367,7 @@ __aicore__ inline void MoeGatingTopKHashEKFullload<T>::CopyOut(int64_t row)
 }
 
 template <typename T>
-__aicore__ inline void MoeGatingTopKHashEKFullload<T>::Init(GM_ADDR x, GM_ADDR bias, GM_ADDR additionalBias, GM_ADDR additionalTokenMask,
+__aicore__ inline void MoeGatingTopKHashEKFullload<T>::Init(GM_ADDR x, GM_ADDR bias, GM_ADDR additionalBias, GM_ADDR additionalTokenMask, GM_ADDR tokenMask,
                                                     GM_ADDR y, GM_ADDR expertIdx,
                                                     GM_ADDR out, GM_ADDR workspace,
                                                     const MoeGatingTopKHashTilingData *tilingData, TPipe *tPipe)
@@ -400,6 +403,10 @@ __aicore__ inline void MoeGatingTopKHashEKFullload<T>::Init(GM_ADDR x, GM_ADDR b
     if (additionalTokenMask != nullptr) {
         hasAdditionalTokenMask_ = true;
         additionalTokenMaskGm_.SetGlobalBuffer((__gm__ bool *)additionalTokenMask);
+    }
+    if (tokenMask != nullptr) {
+        hasTokenMask_ = true;
+        tokenMaskGm_.SetGlobalBuffer((__gm__ bool *)tokenMask);
     }
 
     // init output gm buf
@@ -437,6 +444,10 @@ __aicore__ inline void MoeGatingTopKHashEKFullload<T>::Process()
     CopyInBias();
     CopyInAdditionalBias();
     for (int64_t row = 0; row < curCoreRowCount_; row++) {
+        if (hasTokenMask_ && !tokenMaskGm_.GetValue(row + perCoreRowCount_ * blockIdx_)) {
+            WriteMaskedRow(row);
+            continue;
+        }
         CopyInX(row);
         ComputeX(row + perCoreRowCount_ * blockIdx_);
         SortInGroup();
@@ -445,6 +456,39 @@ __aicore__ inline void MoeGatingTopKHashEKFullload<T>::Process()
         SelectTopKExpertScore();
         CopyOut(row);
     }
+}
+
+template <typename T>
+__aicore__ inline void MoeGatingTopKHashEKFullload<T>::WriteMaskedRow(int64_t row)
+{
+    LocalTensor<T> yOutTensor = yOutQueue_.AllocTensor<T>();
+    LocalTensor<float> yOutFloatTensor;
+    if constexpr (IsSameType<T, float>::value) {
+        yOutFloatTensor = yOutTensor;
+    } else {
+        yOutFloatTensor = yOutTensor.template ReinterpretCast<float>()[kAlign_];
+    }
+    Duplicate(yOutFloatTensor, 0.0f, k_);
+    PipeBarrier<PIPE_V>();
+    if constexpr (!IsSameType<T, float>::value) {
+        Cast(yOutTensor, yOutFloatTensor, RoundMode::CAST_NONE, k_);
+        PipeBarrier<PIPE_V>();
+    }
+    yOutQueue_.EnQue<T>(yOutTensor);
+
+    LocalTensor<int32_t> expertIdxTensor = expertIdxOutQueue_.AllocTensor<int32_t>();
+    Duplicate(expertIdxTensor, static_cast<int32_t>(-1), k_);
+    PipeBarrier<PIPE_V>();
+    expertIdxOutQueue_.EnQue<int32_t>(expertIdxTensor);
+
+    yOutTensor = yOutQueue_.DeQue<T>();
+    expertIdxTensor = expertIdxOutQueue_.DeQue<int32_t>();
+    DataCopyExtParams dataCopyParams{1, static_cast<uint32_t>(k_ * sizeof(T)), 0, 0, 0};
+    DataCopyPad(yGm_[row * k_], yOutTensor, dataCopyParams);
+    dataCopyParams.blockLen = k_ * sizeof(int32_t);
+    DataCopyPad(expertIdxGm_[row * k_], expertIdxTensor, dataCopyParams);
+    yOutQueue_.FreeTensor(yOutTensor);
+    expertIdxOutQueue_.FreeTensor(expertIdxTensor);
 }
 } // namespace MoeGatingTopKHash
 #endif // MOE_GATING_TOP_K_E_K_FULLLOAD_H
