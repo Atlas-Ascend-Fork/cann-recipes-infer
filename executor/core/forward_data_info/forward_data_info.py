@@ -267,6 +267,12 @@ class Request:
     spec_num_draft_tokens: int = 0
     # Measure the combined inference time of the main model and the MTP model
     infer_time: List[float] = field(default_factory=list)
+    # Metrics collected only after the decode profiling window completes.
+    timed_infer_time: List[float] = field(default_factory=list)
+    timed_spec_num_forward_ct: int = 0
+    timed_spec_num_accepted_tokens: int = 0
+    timed_spec_num_draft_tokens: int = 0
+    timed_decode_output_tokens: int = 0
     # Step counter for decode phase
     decode_step_count: int = 0
     valid_output_len: Optional[int] = None
@@ -442,6 +448,7 @@ class Batch:
         infer_time: Optional[float],
         logprobs_tensors: Optional[LogprobsTensors] = None,
         eos_token_ids: Optional[set[int]] = None,
+        count_for_timing: bool = False,
     ) -> Dict[int, List[int]]:
         """Split batch outputs by index and update each request in-place."""
         next_tokens_by_request: Dict[int, List[int]] = {}
@@ -452,6 +459,11 @@ class Batch:
         cp_metadata = getattr(forward_metadata, "cp_metadata", None)
         if is_prefill and cp_metadata is not None and cp_metadata.enabled:
             request_indices = cp_metadata.output_request_indices.detach().cpu().tolist()
+
+        # MTP and DSpark both expose speculative verification through draft_info.
+        # Keep this explicit so acceptance metrics are only updated for a
+        # speculative decode, rather than inferring the mode from accepted_num.
+        is_speculative_decode = self.draft_info is not None and not is_prefill
 
         if next_tokens is not None and next_tokens.shape[0] != len(request_indices):
             raise ValueError(
@@ -465,6 +477,7 @@ class Batch:
         for output_idx, request_idx in enumerate(request_indices):
             request = self.requests[request_idx]
             accepted_count = None
+            request_next_tokens = []
 
             if self.draft_info:
                 # Draft state holds the same selected rows as the tensors above.
@@ -502,6 +515,17 @@ class Batch:
 
             if infer_time is not None:
                 request.infer_time.append(infer_time)
+                if count_for_timing and request.valid_output_len is None:
+                    request.timed_infer_time.append(infer_time)
+                    if is_speculative_decode and accepted_count is not None:
+                        request.timed_decode_output_tokens += len(request_next_tokens)
+                        request.timed_spec_num_forward_ct += 1
+                        request.timed_spec_num_accepted_tokens += accepted_count
+                        proposal_lens = getattr(state, "proposal_lens", None)
+                        if proposal_lens is not None:
+                            request.timed_spec_num_draft_tokens += int(proposal_lens.item())
+                        elif getattr(state, "spec_tokens", None) is not None:
+                            request.timed_spec_num_draft_tokens += state.spec_tokens.shape[-1]
 
         return next_tokens_by_request
 

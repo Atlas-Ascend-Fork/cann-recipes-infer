@@ -31,6 +31,11 @@ class ProfilerPhase(Enum):
     DECODE = "decode"
 
 
+# Decode profiling window. Timing starts after the skipped and active steps.
+DECODE_PROFILE_ACTIVE_STEPS = 3
+DECODE_PROFILE_SKIP_FIRST = 3
+
+
 class FakeContextManager:
     def __enter__(self):
         return self
@@ -47,7 +52,13 @@ class FakeContextManager:
         return
 
 
-def create_profiler(enable_profiler=False, profile_save_path="prof", active=3, repeat=1, skip_first=3):
+def create_profiler(
+    enable_profiler=False,
+    profile_save_path="prof",
+    active=DECODE_PROFILE_ACTIVE_STEPS,
+    repeat=1,
+    skip_first=DECODE_PROFILE_SKIP_FIRST,
+):
     if enable_profiler:
         os.makedirs(profile_save_path, exist_ok=True)
         experimental_config = torch_npu.profiler._ExperimentalConfig(
@@ -88,6 +99,8 @@ class ProfilerManager:
         self.profile_save_path = profile_save_path
         self.profiler_status = None
         self.current_profiler = FakeContextManager()
+        self.decode_profile_steps = 0
+        self.decode_profile_complete = not enable_profiler
 
     def check_if_update(self, cur_status: ProfilerPhase) -> bool:
         """Return whether the requested phase should replace the active profiler."""
@@ -119,9 +132,26 @@ class ProfilerManager:
         )
         self.current_profiler.start()
         self.profiler_status = cur_status
+        if cur_status == ProfilerPhase.DECODE:
+            self.decode_profile_steps = 0
+            self.decode_profile_complete = False
 
     def step(self):
         self.current_profiler.step()
+        if self.enable_profiler and self.profiler_status == ProfilerPhase.DECODE:
+            self.decode_profile_steps += 1
+            profile_window_steps = (
+                DECODE_PROFILE_SKIP_FIRST + DECODE_PROFILE_ACTIVE_STEPS
+            )
+            # Timing starts after the skipped and active profiling steps.
+            self.decode_profile_complete = (
+                self.decode_profile_steps >= profile_window_steps
+            )
+
+    @property
+    def timing_ready(self) -> bool:
+        """Whether decode timing is outside the profiling window."""
+        return self.decode_profile_complete
 
     def __del__(self):
         if self.enable_profiler:

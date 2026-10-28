@@ -918,6 +918,9 @@ class ExecutionEngine:
             return self._forward_afd_ffn_batch(batch)
 
         self.profiler.set_status(ProfilerPhase.PREFILL if batch.is_prefill else ProfilerPhase.DECODE)
+        # count_for_timing controls the post-profiling decode average latency,
+        # rather than timing every model execution.
+        count_for_timing = self.profiler.timing_ready and not batch.is_prefill
         inputs_ids = batch.input_ids.to(self.device)
         seq_lens = batch.seq_lens.to(self.device) if batch.seq_lens is not None else None
         model_inputs = self._build_model_inputs(
@@ -1021,6 +1024,7 @@ class ExecutionEngine:
             infer_time_total,
             logprobs_tensors,
             eos_token_ids=self.eos_token_ids,
+            count_for_timing=count_for_timing,
         )
         return {
             "next_tokens": next_tokens_by_request,

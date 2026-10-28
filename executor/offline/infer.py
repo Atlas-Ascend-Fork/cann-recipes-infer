@@ -100,25 +100,55 @@ def log_results(results, speculative_stats, infer_time, model_name, speculative_
     decode_infer_time = infer_time[2:] if enable_mm_encode else infer_time[1:]
     # Calculate and log total draft acceptance rate if speculative inference is enabled
     if next_n > 0:
+        # Acceptance metrics cover the complete decode run. Timing and the
+        # equivalent latency use only steps after profiling completes.
         spec_num_forward_ct = sum(speculative_stats['spec_num_forward_ct'])
         draft_token_counts = speculative_stats.get('spec_num_draft_tokens')
         total_spec_tokens = sum(draft_token_counts) if draft_token_counts is not None \
             else spec_num_forward_ct * next_n
         total_accept_tokens = sum(speculative_stats['spec_num_accepted_tokens'])
+        timed_spec_num_forward_ct = sum(
+            speculative_stats.get('timed_spec_num_forward_ct', [])
+        )
+        timed_accept_tokens = sum(
+            speculative_stats.get('timed_spec_num_accepted_tokens', [])
+        )
         valid_output_len = sum(speculative_stats['valid_output_len'])
         draft_label = {"mtp": "MTP", "dspark": "DSpark"}.get(
             speculative_method, speculative_method
         )
 
         avg_accept_rate = total_accept_tokens / total_spec_tokens if total_spec_tokens > 0 else 0.0
-        avg_accept_length = total_accept_tokens / spec_num_forward_ct + 1 if spec_num_forward_ct > 0 else 1.0
+        avg_accept_length = (
+            total_accept_tokens / spec_num_forward_ct + 1
+            if spec_num_forward_ct > 0 else 1.0
+        )
+        timed_accept_length = (
+            timed_accept_tokens / timed_spec_num_forward_ct + 1
+            if timed_spec_num_forward_ct > 0 else 1.0
+        )
+        use_timed_stats = timed_spec_num_forward_ct > 0
+        total_decode_time = None
         decode_execution_times = speculative_stats.get("decode_execution_time")
-        if decode_execution_times is not None:
+        if decode_execution_times is not None and use_timed_stats:
             total_decode_time = sum(decode_execution_times)
-            avg_decode_time = total_decode_time / spec_num_forward_ct if spec_num_forward_ct > 0 else 0.0
+            avg_decode_time = (
+                total_decode_time / timed_spec_num_forward_ct
+                if timed_spec_num_forward_ct > 0 else 0.0
+            )
         else:
-            avg_decode_time = process_infer_time(decode_infer_time, len(decode_infer_time))
-        avg_equivalent_time = avg_decode_time / avg_accept_length
+            full_decode_execution_times = speculative_stats.get(
+                "full_decode_execution_time", []
+            )
+            if full_decode_execution_times and spec_num_forward_ct > 0:
+                total_decode_time = sum(full_decode_execution_times)
+                avg_decode_time = total_decode_time / spec_num_forward_ct
+            else:
+                avg_decode_time = process_infer_time(
+                    decode_infer_time, len(decode_infer_time)
+                )
+            timed_accept_length = avg_accept_length
+        avg_equivalent_time = avg_decode_time / timed_accept_length
 
         logger.info(f"Finished inference, the number of valid output tokens is {valid_output_len}, "
                     f"total number of draft tokens is {total_spec_tokens}, "
@@ -131,8 +161,10 @@ def log_results(results, speculative_stats, infer_time, model_name, speculative_
             f" is {avg_equivalent_time*1000:.2f} ms")
         logger.info("The speculation accept length: %.4f", avg_accept_length)
         logger.info("The speculation accept rate: %.4f", avg_accept_rate)
-        decode_output_counts = speculative_stats.get("decode_output_tokens")
-        if decode_execution_times is not None and decode_output_counts is not None:
+        decode_output_counts = speculative_stats.get(
+            "timed_decode_output_tokens" if use_timed_stats else "decode_output_tokens"
+        )
+        if total_decode_time is not None and decode_output_counts is not None:
             total_decode_outputs = sum(decode_output_counts)
             if total_decode_outputs > 0:
                 logger.info(

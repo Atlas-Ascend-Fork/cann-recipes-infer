@@ -178,7 +178,12 @@ class OfflineInference:
             "spec_num_forward_ct": [],
             "valid_output_len": [],
             "decode_execution_time": [],
+            "full_decode_execution_time": [],
             "decode_output_tokens": [],
+            "timed_spec_num_forward_ct": [],
+            "timed_spec_num_accepted_tokens": [],
+            "timed_spec_num_draft_tokens": [],
+            "timed_decode_output_tokens": [],
         }
         result_request_ids = request_ids[:original_request_count]
         if enable_cp:
@@ -228,7 +233,20 @@ class OfflineInference:
                 # Match durations to counted request verification rounds, excluding
                 # trailing static-batch execution after this request has finished.
                 request_decode_times = request.infer_time[1:request.spec_num_forward_ct + 1]
-                speculative_stats["decode_execution_time"].append(sum(request_decode_times))
+                speculative_stats["full_decode_execution_time"].append(
+                    sum(request_decode_times)
+                )
+                speculative_stats["decode_execution_time"].append(sum(request.timed_infer_time))
+                speculative_stats["timed_spec_num_forward_ct"].append(request.timed_spec_num_forward_ct)
+                speculative_stats["timed_spec_num_accepted_tokens"].append(
+                    request.timed_spec_num_accepted_tokens
+                )
+                speculative_stats["timed_spec_num_draft_tokens"].append(
+                    request.timed_spec_num_draft_tokens
+                )
+                speculative_stats["timed_decode_output_tokens"].append(
+                    request.timed_decode_output_tokens
+                )
                 speculative_stats["decode_output_tokens"].append(max(len(valid_output_id_list) - 1, 0))
                 speculative_stats["spec_num_accepted_tokens"].append(request.spec_num_accepted_tokens)
                 speculative_stats["spec_num_draft_tokens"].append(request.spec_num_draft_tokens)
