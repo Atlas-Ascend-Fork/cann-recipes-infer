@@ -458,21 +458,22 @@ class TestCustomMoeGatingTopK(TestCase):
         mask = torch.ones(batch_size, dtype=torch.bool)
         mask[::2] = False
 
-        for dtype in [torch.float16, torch.bfloat16, torch.float32]:
-            for use_hash in [False, True]:
-                np.random.seed(99)
-                x = torch.tensor(np.random.uniform(-2, 2, (batch_size, expert_count))).to(dtype)
-                bias = torch.tensor(np.random.uniform(-0.5, 0.5, (expert_count,))).to(dtype)
-                if use_hash:
-                    input_ids = torch.tensor(np.random.uniform(0, N, (batch_size,))).to(torch.int64)
-                    tid2eid = torch.tensor(np.random.uniform(0, expert_count, (N, k))).to(torch.int32)
-                    # token_mask为False的行填入非法input_ids, 验证不会访问tid2eid越界
-                    input_ids_masked = input_ids.clone()
-                    input_ids_masked[~mask] = -1
-                else:
-                    input_ids = None
-                    input_ids_masked = None
-                    tid2eid = None
+        for k in [6, 16]:  # k>8覆盖yOutQueue_的UB按uint16视图清零的边界
+            for dtype in [torch.float16, torch.bfloat16, torch.float32]:
+                for use_hash in [False, True]:
+                    np.random.seed(99)
+                    x = torch.tensor(np.random.uniform(-2, 2, (batch_size, expert_count))).to(dtype)
+                    bias = torch.tensor(np.random.uniform(-0.5, 0.5, (expert_count,))).to(dtype)
+                    if use_hash:
+                        input_ids = torch.tensor(np.random.uniform(0, N, (batch_size,))).to(torch.int64)
+                        tid2eid = torch.tensor(np.random.uniform(0, expert_count, (N, k))).to(torch.int32)
+                        # token_mask为False的行填入非法input_ids, 验证不会访问tid2eid越界
+                        input_ids_masked = input_ids.clone()
+                        input_ids_masked[~mask] = -1
+                    else:
+                        input_ids = None
+                        input_ids_masked = None
+                        tid2eid = None
 
                 # 无token_mask参照结果(必须使用合法input_ids)
                 y_ref, e_ref, _ = torch.ops.custom.npu_moe_gating_top_k(
@@ -518,14 +519,15 @@ class TestCustomMoeGatingTopK(TestCase):
         mask = torch.ones(batch_size, dtype=torch.bool)
         mask[1::2] = False
 
-        for dtype in [torch.float16, torch.bfloat16, torch.float32]:
-            for normType in [0, 1]:  # softmax / sigmoid
-                np.random.seed(123)
-                x = torch.tensor(np.random.uniform(-2, 2, (batch_size, expert_count))).to(dtype)
-                bias = torch.tensor(np.random.uniform(-0.5, 0.5, (expert_count,))).to(dtype)
-                x_npu = x.to("npu:%s" % DEVICE_ID)
-                bias_npu = bias.to("npu:%s" % DEVICE_ID)
-                mask_npu = mask.to("npu:%s" % DEVICE_ID)
+        for k in [6, 16]:  # k>8覆盖yOutQueue_的UB按uint16视图清零的边界
+            for dtype in [torch.float16, torch.bfloat16, torch.float32]:
+                for normType in [0, 1]:  # softmax / sigmoid
+                    np.random.seed(123)
+                    x = torch.tensor(np.random.uniform(-2, 2, (batch_size, expert_count))).to(dtype)
+                    bias = torch.tensor(np.random.uniform(-0.5, 0.5, (expert_count,))).to(dtype)
+                    x_npu = x.to("npu:%s" % DEVICE_ID)
+                    bias_npu = bias.to("npu:%s" % DEVICE_ID)
+                    mask_npu = mask.to("npu:%s" % DEVICE_ID)
 
                 # 无token_mask参照(out_flag=True以校验out行为)
                 y_ref, e_ref, out_ref = torch.ops.custom.npu_moe_gating_top_k(

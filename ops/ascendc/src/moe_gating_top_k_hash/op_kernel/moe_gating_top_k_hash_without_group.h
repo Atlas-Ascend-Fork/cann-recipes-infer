@@ -444,14 +444,15 @@ __aicore__ inline void MoeGatingTopKHashWithoutGroup<T, U1, U2>::Process()
 template <typename T, typename U1, typename U2>
 __aicore__ inline void MoeGatingTopKHashWithoutGroup<T, U1, U2>::WriteMaskedRow(int64_t row)
 {
-    LocalTensor<float> yOutTensor = yOutQueue_.AllocTensor<float>();
-    Duplicate(yOutTensor, 0.0f, k_);
-    PipeBarrier<PIPE_V>();
-    if constexpr (!IsSameType<T, float>::value) {
-        Cast(yOutTensor.ReinterpretCast<T>(), yOutTensor, RoundMode::CAST_NONE, k_);
-        PipeBarrier<PIPE_V>();
+    LocalTensor<T> yOutTensor = yOutQueue_.AllocTensor<T>();
+    if constexpr (IsSameType<T, float>::value) {
+        Duplicate(yOutTensor, 0.0f, k_);
+    } else {
+        // half/bfloat16按uint16位模式清零(+0.0的位模式为0x0000)
+        Duplicate(yOutTensor.template ReinterpretCast<uint16_t>(), static_cast<uint16_t>(0), k_);
     }
-    yOutQueue_.EnQue<float>(yOutTensor);
+    PipeBarrier<PIPE_V>();
+    yOutQueue_.EnQue<T>(yOutTensor);
 
     LocalTensor<int32_t> expertIdxOut = expertIdxOutQueue_.AllocTensor<int32_t>();
     Duplicate(expertIdxOut, static_cast<int32_t>(-1), k_);

@@ -1494,13 +1494,15 @@ namespace MoeGatingTopKHashRegbaseNS
     __aicore__ inline void MoeGatingTopKHashRegbase<T, U1, U2>::WriteMaskedRow(int64_t row)
     {
         LocalTensor<T> yOutTensor = yOutQueue_.AllocTensor<T>();
-        LocalTensor<float> yOutFloatTensor = yOutTensor.template ReinterpretCast<float>();
-        Duplicate(yOutFloatTensor, 0.0f, k_);
-        PipeBarrier<PIPE_V>();
-        if constexpr (!IsSameType<T, float>::value) {
-            Cast(yOutTensor, yOutFloatTensor, RoundMode::CAST_NONE, k_);
-            PipeBarrier<PIPE_V>();
+        if constexpr (IsSameType<T, float>::value) {
+            Duplicate(yOutTensor, 0.0f, k_);
+        } else {
+            // half/bfloat16按uint16位模式清零(+0.0的位模式为0x0000);
+            // 不用float视图中转: yOutQueue_的UB为AlignBytes(k_, sizeof(T))字节,
+            // k_较大时不足以容纳k_个float
+            Duplicate(yOutTensor.template ReinterpretCast<uint16_t>(), static_cast<uint16_t>(0), k_);
         }
+        PipeBarrier<PIPE_V>();
         yOutQueue_.EnQue<T>(yOutTensor);
 
         LocalTensor<int32_t> expertIdxTensor = expertIdxOutQueue_.AllocTensor<int32_t>();
