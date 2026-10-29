@@ -2602,7 +2602,7 @@ class KimiMLAAttention(nn.Module):
         mask_mode = 0 if q_len == 1 else 3
         attn_mask = attention_mask if mask_mode == 3 else None
         if metadata is None:
-            metadata = torch.ops.cann_ops_transformer.flash_mla_with_kvcache_metadata(
+            metadata = torch.ops.cann_ops_transformer.flash_mla_metadata(
                 cache_seqlens,
                 num_heads_q=q.shape[1],
                 num_heads_kv=1,
@@ -2615,7 +2615,7 @@ class KimiMLAAttention(nn.Module):
                 mask_mode=mask_mode,
                 layout_q="TND",
             )
-        output, _ = torch.ops.cann_ops_transformer.flash_mla_with_kvcache(
+        output, _ = torch.ops.cann_ops_transformer.flash_mla(
             q.contiguous(),
             kv_cache_nz,
             block_table=block_table,
@@ -2706,7 +2706,7 @@ class KimiMLAAttention(nn.Module):
             )
         if self.use_w8a8c8:
             blocks, block_size, _, width = cache.shape
-            output, _ = torch.ops.cann_ops_transformer.quant_flash_mla_with_kvcache(
+            output, _ = torch.ops.cann_ops_transformer.quant_flash_mla(
                 q, cache.view(blocks, 1, width // 32, block_size, 32),
                 q_descale, self.mla_kv_scale, block_table, cache_seqlens, 1,
                 cu_seqlens_q=cu_seqlens_q,

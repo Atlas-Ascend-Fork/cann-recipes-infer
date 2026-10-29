@@ -548,10 +548,10 @@ class AttnMetaData:
         def build_metadata():
             quant_args = {}
             if self.use_mla_w8a8c8:
-                op = torch.ops.cann_ops_transformer.quant_flash_mla_with_kvcache_metadata
+                op = torch.ops.cann_ops_transformer.quant_flash_mla_metadata
                 quant_args = {"quant_mode": 1}
             else:
-                op = torch.ops.cann_ops_transformer.flash_mla_with_kvcache_metadata
+                op = torch.ops.cann_ops_transformer.flash_mla_metadata
             return op(
                 cache_seqlens,
                 num_heads_q=self.config.num_attention_heads,

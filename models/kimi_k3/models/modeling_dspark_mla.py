@@ -262,7 +262,7 @@ class K3DSparkAttention(nn.Module):
         """Run the same cann_ops_transformer Flash MLA ABI as the main model."""
         if metadata is None:
             metadata = (
-                torch.ops.cann_ops_transformer.flash_mla_with_kvcache_metadata(
+                torch.ops.cann_ops_transformer.flash_mla_metadata(
                     cache_seqlens,
                     num_heads_q=query.shape[1],
                     num_heads_kv=1,
@@ -276,7 +276,7 @@ class K3DSparkAttention(nn.Module):
                     layout_q="TND",
                 )
             )
-        output, _ = torch.ops.cann_ops_transformer.flash_mla_with_kvcache(
+        output, _ = torch.ops.cann_ops_transformer.flash_mla(
             query.contiguous(),
             self._pa_nz_cache_view(kv_cache),
             block_table=block_table,
@@ -622,10 +622,10 @@ class K3DSparkForCausalLM(K3DSparkForCausalLMBase):
         ) * self.next_n
         cache_seqlens = (context_lengths + self.next_n).to(torch.int32)
         # Build the operator metadata before graph capture, matching the main
-        # model's flash_mla_with_kvcache call contract. DSpark attention stays
+        # model's flash_mla call contract. DSpark attention stays
         # non-causal, so mask_mode remains zero for the whole proposal block.
         flash_mla_metadata = (
-            torch.ops.cann_ops_transformer.flash_mla_with_kvcache_metadata(
+            torch.ops.cann_ops_transformer.flash_mla_metadata(
                 cache_seqlens,
                 num_heads_q=self.config.num_attention_heads,
                 num_heads_kv=1,
