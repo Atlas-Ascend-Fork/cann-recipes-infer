@@ -70,6 +70,7 @@ class OfflineInference:
             input_truncated_len=self.infer_config.data_config.input_truncated_len,
             mm_processor=self.engine.mm_processor,
             enable_mm_encode=self.engine.enable_mm_encode,
+            reuse_tokenizer=self.infer_config.data_config.reuse_tokenizer,
         )
 
     def _load_model(self) -> None:

@@ -54,6 +54,7 @@ class Scheduler:
         input_truncated_len: Optional[int] = None,
         mm_processor: Optional[BaseMMProcessor] = None,
         enable_mm_encode: bool = False,
+        reuse_tokenizer: bool = False,
     ):
         """Initialize the scheduler.
 
@@ -64,11 +65,15 @@ class Scheduler:
                 tokenizer for truncation; None disables truncation.
             mm_processor: Optional model-specific multimodal processor.
             enable_mm_encode: Route admitted requests through MM Encode before Prefill.
+            reuse_tokenizer: In offline mode, reuse the first request's
+                tokenized input IDs for the rest of the batch.
         """
         self.config = config or SchedulerConfig()
         self.tokenizer = tokenizer
         self.input_truncated_len = input_truncated_len
         self.mm_processor = mm_processor
+        self.reuse_tokenizer = reuse_tokenizer
+        self._reused_input_ids: Optional[torch.Tensor] = None
 
         # Request state management
         self.mm_waiting_queue: Optional[deque[Request]] = (
@@ -450,9 +455,16 @@ class Scheduler:
 
     def _prepare_request_prompt(self, request: Request) -> None:
         if request.input_ids.numel() > 0:
+            if self.reuse_tokenizer and self.mode == 'offline' and self._reused_input_ids is None:
+                self._reused_input_ids = request.input_ids
             return
 
-        request.input_ids = self.tokenize_request(request.prompt, self.input_truncated_len)
+        if self.reuse_tokenizer and self.mode == 'offline' and self._reused_input_ids is not None:
+            request.input_ids = self._reused_input_ids
+        else:
+            request.input_ids = self.tokenize_request(request.prompt, self.input_truncated_len)
+            if self.reuse_tokenizer and self.mode == 'offline':
+                self._reused_input_ids = request.input_ids
 
     def reject_if_prompt_too_long(self, request: Request) -> bool:
         """Admission-time prompt-length guard — single source of truth.
@@ -698,6 +710,7 @@ class Scheduler:
         self.prefill_infer_time = 0.0
         self._request_counter = 0
         self._batch_counter = 0
+        self._reused_input_ids = None
 
     def get_stats(self) -> Dict[str, int]:
         """Get scheduler statistics.
