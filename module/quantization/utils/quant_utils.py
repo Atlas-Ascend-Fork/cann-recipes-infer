@@ -94,6 +94,8 @@ def swiglu_group_quant(
             quant_mode=quant_mode, clamp_limit=clamp_limit,
             group_index=group_index, output_origin=False,
             group_list_type=group_list_type)
+    import cann_ops_nn
+
     if clamp_limit is None:
         clamp_limit = -1.0
     return torch.ops.cann_ops_nn.swiglu_group_quant(

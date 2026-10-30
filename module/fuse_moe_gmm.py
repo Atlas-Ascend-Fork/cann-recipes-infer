@@ -116,6 +116,7 @@ class FusedMoeWeightScaleSupported(Enum):
 
 class FusedMoEGMM(torch.nn.Module):
     TP_INTERMEDIATE_ALIGN = 64
+    NN_SWIGLU_INPUT_ALIGN = 256
 
     def __init__(
         self,
@@ -190,6 +191,24 @@ class FusedMoEGMM(torch.nn.Module):
         units = total // align
         base, rem = divmod(units, parts)
         return [(base + 1) * align if r < rem else base * align for r in range(parts)]
+
+    def should_use_fused_swiglu_quant(self, group_list_type: int) -> bool:
+        if self.enable_custom_swiglu or group_list_type == 2:
+            return True
+
+        if self.enable_nonuniform_tp_split:
+            split_sizes = self.split_intermediate_aligned(
+                self.intermediate_size,
+                self.tp_size,
+                self.TP_INTERMEDIATE_ALIGN,
+            )
+        else:
+            split_sizes = [self.intermediate_size_per_partition]
+
+        return all(
+            2 * size % self.NN_SWIGLU_INPUT_ALIGN == 0
+            for size in split_sizes
+        )
 
     def _intermediate_shard_offset(self, loaded_weight: torch.Tensor, shard_dim: int) -> int:
         return self.intermediate_offset * loaded_weight.shape[shard_dim] // self.intermediate_size

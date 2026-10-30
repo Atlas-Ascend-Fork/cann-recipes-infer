@@ -26,7 +26,7 @@
 基础软件版本：
 
 - A3 手动部署：CANN 9.1.0.beta.1、PyTorch 2.8.0、torch_npu v26.0.0。
-- A5 Docker 部署：支持 x86 操作系统，使用 cann9.1.0.pt2.9.0_hy3_x86_image_v1.tar 镜像。
+- A5 aarch64 部署：CANN 9.2.0、PyTorch 2.8.0、torch_npu 2.8.0.post4，使用 Python 3.11。
 
 > 说明：执行前可通过 `npu-smi info` 检查 Ascend NPU 固件和驱动是否正确安装。
 
@@ -110,52 +110,34 @@ modelscope download --model Tencent-Hunyuan/Hy3-FP8 --local_dir /data/models/Hy3
 
    > 说明：HCCL 相关配置，如 `HCCL_SOCKET_IFNAME`、`HCCL_OP_EXPANSION_MODE`，可以参考[集合通信文档](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900/maintenref/envvar/envref_07_0001.html)并在 `executor/scripts/function.sh` 中自定义配置。
 
-#### Atlas A5 Docker 部署
+#### Atlas A5 aarch64 部署
 
-1. 获取 Docker 镜像。
+本节面向 Ascend 950DT 与 aarch64 操作系统，使用 Python 3.11。
 
-   从[x86镜像地址](https://cann-ai.obs.cn-north-4.myhuaweicloud.com/cann-quantization/Hy3/cann9.1.0.pt2.9.0_hy3_x86_image_v1.tar)中下载 docker 镜像，然后上传到A5服务器的每个节点上，并通过命令导入镜像 `docker load -i cann9.1.0.pt2.9.0_hy3_x86_image_v1.tar`。
+1. 安装 CANN 软件包。
 
-2. 拉起 Docker 容器。
+   从[软件包下载地址](https://www.hiascend.com/developer/download/community/result?module=cann&cann=9.2.0)下载 `Ascend-cann-toolkit_9.2.0_linux-aarch64.run` 与 `Ascend-cann-950-ops_9.2.0_linux-aarch64.run`，参考 [CANN 安装文档](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/latest/softwareinst/instg/instg_0000.html?OS=Debian&InstallType=local)完成安装，并加载安装目录下的 `bin/setenv.bash`。
 
-   在各个节点上通过如下脚本拉起容器，默认容器名为 cann_recipes_infer。注意：需要将权重路径和源码路径挂载到容器里。以下示例挂载 8 个 NPU 设备，并挂载源码与权重目录。
+2. 安装 Ascend Extension for PyTorch（torch_npu）。
 
-   ```bash
-   docker run -u root -itd --name cann_recipes_infer --ulimit nproc=65535:65535 --ipc=host \
-       --device=/dev/davinci0 \
-       --device=/dev/davinci1 \
-       --device=/dev/davinci2 \
-       --device=/dev/davinci3 \
-       --device=/dev/davinci4 \
-       --device=/dev/davinci5 \
-       --device=/dev/davinci6 \
-       --device=/dev/davinci7 \
-       --device=/dev/davinci_manager --device=/dev/devmm_svm \
-       --device=/dev/hisi_hdc \
-       -v /home/:/home \
-       -v /data:/data \
-       -v /etc/localtime:/etc/localtime \
-       -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
-       -v /etc/ascend_install.info:/etc/ascend_install.info -v /var/log/npu/:/usr/slog \
-       -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi -v /sys/fs/cgroup:/sys/fs/cgroup:ro \
-       -v /usr/local/dcmi:/usr/local/dcmi -v /usr/local/sbin:/usr/local/sbin \
-       -v /etc/hccn.conf:/etc/hccn.conf -v /root/.pip:/root/.pip -v /etc/hosts:/etc/hosts \
-       -v /usr/bin/hostname:/usr/bin/hostname \
-       --net=host \
-       --shm-size=128g \
-       --privileged \
-       cann9.1.0.pt2.9.0_hy3_x86_image:v1 /bin/bash
-   ```
+   使用 PyTorch `2.8.0` 与 torch_npu `2.8.0.post4`。从[软件包下载地址](https://gitcode.com/Ascend/pytorch/releases/v26.0.0-pytorch2.8.0)下载 `torch_npu-2.8.0.post4-cp311-cp311-manylinux_2_28_aarch64.whl`，并参考 [torch_npu 安装文档](https://www.hiascend.com/document/detail/zh/Pytorch/2600/configandinstg/instg/docs/zh/installation_guide/installation_via_binary_package.md)安装。
 
-3. 在各个节点上通过如下命令进入容器：
+3. 安装 Python 依赖。
+
+   在代码仓根目录执行：
 
    ```bash
-   docker attach cann_recipes_infer
-   cd /home/code/cann-recipes-infer
+   pip3 install -r ./models/hy3/requirements.txt
    ```
 
-   同步修改 `executor/scripts/set_env.sh` 中的 `IPs` 和 `cann_path`。
+4. 配置运行环境。
 
+   修改 `executor/scripts/set_env.sh` 中的如下字段：
+
+   - `IPs`：配置所有节点的 IP，按照 rank id 排序。
+   - `cann_path`：填写 CANN 9.2.0 的实际安装根目录，与上面加载环境的目录一致。
+
+   若保留其他自定义算子包，需排除其中的 `swiglu_group_quant` 并清理旧同名注册。
 
 ### 转换权重
 

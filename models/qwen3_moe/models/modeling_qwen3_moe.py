@@ -761,7 +761,7 @@ class Qwen3MoeAttention(nn.Module):
 
         query_states = self.q_norm(query_states.view(query_shape).contiguous())
         key_states = self.k_norm(key_states.view(key_value_shape).contiguous())
-        value_states = value_states.view(key_value_shape)
+        value_states = value_states.view(key_value_shape).contiguous()
 
         cos, sin = cos_sin
         query_states, key_states = torch_npu.npu_apply_rotary_pos_emb(

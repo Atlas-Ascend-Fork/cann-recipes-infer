@@ -28,8 +28,8 @@ from torch import nn
 import torch_npu
 
 import cann_ops_transformer
-from ops.cannbot_dsl.flash_kda import flash_kda as _flash_kda_impl
-from ops.cannbot_dsl.fused_recurrent_kda import (
+from recipes_ops.cannbot_dsl.flash_kda import flash_kda as _flash_kda_impl
+from recipes_ops.cannbot_dsl.fused_recurrent_kda import (
     fused_recurrent_kda_op as _recurrent_kda_impl,
 )
 
@@ -375,10 +375,11 @@ class Glm53KdaAttention(nn.Module):
         q, k, v = q.view(shape), k.view(shape), v.view(shape)
 
         if self.use_fused_recurrent_kda:
+            mixedqkv = torch.cat(
+                (q.flatten(1), k.flatten(1), v.flatten(1)), dim=-1,
+            ).unsqueeze(1).contiguous()
             out = _recurrent_kda_impl(
-                q.unsqueeze(1).contiguous(),
-                k.unsqueeze(1).contiguous(),
-                v.unsqueeze(1).contiguous(),
+                mixedqkv,
                 state=self.recurrent_state_cache,
                 beta=raw_beta.unsqueeze(1).unsqueeze(-1).contiguous(),
                 g=raw_decay.unsqueeze(1).contiguous(),

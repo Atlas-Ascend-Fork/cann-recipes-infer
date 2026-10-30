@@ -23,7 +23,7 @@ Ling（`BailingMoeV2_5`）是一款**混合注意力 + MoE** 大模型。本实�
 | 操作系统 | Linux ARM |
 | 部署规模 | 默认 `world_size: 8`（见 `config/bailing_2_5.yaml`），可按实际卡数调整 |
 | 驱动 / 固件 | 按所在平台的标准要求安装；`npu-smi info` 确认固件与驱动已正确安装 |
-| CANN | 安装到固定路径（如 `/usr/local/Ascend/cann`） |
+| CANN | CANN Toolkit 与 950 ops 使用 9.2.0，安装到固定路径（如 `/usr/local/Ascend/cann`） |
 
 ---
 
@@ -128,7 +128,7 @@ parallel_config:
 bash executor/scripts/infer.sh --model bailing_2_5 --yaml bailing_2_5.yaml
 ```
 使用默认样例输出如下
- 
+
  ```shell
 It looks like your sentence was cut off. Based on what you’ve written, you’re describing the core idea of the **attention mechanism** (as introduced in "Attention Is All You Need").
 
@@ -137,4 +137,3 @@ Here’s the complete idea, filling in the likely intended ending:
 An attention function can be described as mapping a query and a set of key-value pairs to an output, where the query, keys, values, and output are all vectors. The output is **computed as a weighted sum of the values, where the weight assigned to each value is determined by the compatibility (or similarity) of the query with the corresponding key.**
     ...
  ```
-

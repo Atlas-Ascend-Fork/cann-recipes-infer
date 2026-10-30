@@ -78,6 +78,19 @@
   cd /home/code/cann-recipes-infer/models/glm_5_2
   ```
 
+### Ascend 950DT 环境准备
+
+Ascend 950DT aarch64 环境使用 Python 3.11、CANN Toolkit 9.2.0 与配套的 950 ops 9.2.0。
+
+安装与 PyTorch 2.8.0 配套的 Ascend Extension for PyTorch（torch_npu）。请从[软件包下载地址](https://gitcode.com/Ascend/pytorch/releases/v26.0.0-pytorch2.8.0)下载 `torch_npu-2.8.0.post4-cp311-cp311-manylinux_2_28_aarch64.whl`。
+
+在代码仓根目录安装本模型依赖，再安装下载的 torch_npu 软件包：
+
+```bash
+pip3 install -r models/glm_5_2/requirements.txt
+pip3 install /path/to/torch_npu-2.8.0.post4-cp311-cp311-manylinux_2_28_aarch64.whl
+```
+
 ### 转换权重
 
   在各个节点上使用`weight_convert.sh` 脚本完成BF16到Int8权重转换。

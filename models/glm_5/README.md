@@ -78,6 +78,19 @@ cd cann-recipes-infer
 
 > 说明：HCCL相关配置，如`HCCL_SOCKET_IFNAME`、`HCCL_OP_EXPANSION_MODE`，可以参考[集合通信文档](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/910beta1/maintenref/envvar/envref_07_0001.html)并在`executor/scripts/function.sh`中自定义配置。
 
+### Ascend 950DT 环境准备
+
+Ascend 950DT aarch64 环境使用 Python 3.11、CANN Toolkit 9.2.0 与配套的 950 ops 9.2.0。
+
+安装与 PyTorch 2.8.0 配套的 Ascend Extension for PyTorch（torch_npu）。请从[软件包下载地址](https://gitcode.com/Ascend/pytorch/releases/v26.0.0-pytorch2.8.0)下载 `torch_npu-2.8.0.post4-cp311-cp311-manylinux_2_28_aarch64.whl`。
+
+在代码仓根目录安装本模型依赖，再安装下载的 torch_npu 软件包：
+
+```bash
+pip3 install -r models/glm_5/requirements.txt
+pip3 install /path/to/torch_npu-2.8.0.post4-cp311-cp311-manylinux_2_28_aarch64.whl
+```
+
 ## 权重准备
 
 请根据所使用的模型类型自行下载原始权重到本地路径，例如`/data/models/GLM-5-FP8`。

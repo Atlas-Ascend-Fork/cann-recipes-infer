@@ -22,7 +22,7 @@ GLM-5.3-Flash 是智谱发布的**混合注意力 + mHC + MoE** 大模型，本�
 | 操作系统 | Linux ARM |
 | 部署规模 | 默认 `world_size: 8`（见 `config/glm_5_3_flash_ep8.yaml`），可按实际卡数调整；MoE EP = world_size |
 | 驱动 / 固件 | 按所在平台的标准要求安装；`npu-smi info` 确认固件与驱动已正确安装 |
-| CANN | 安装到固定路径（如 `/usr/local/Ascend/cann`） |
+| CANN | CANN Toolkit 与 950 ops 使用 9.2.0，安装到固定路径（如 `/usr/local/Ascend/cann`） |
 | 自定义算子包 | `opp/vendors/customize`（mHC AscendC 算子）与 `opp/vendors/custom_transformer`（causal_conv1d），见「快速启动 · 2」 |
 
 ---
@@ -43,13 +43,15 @@ cd cann-recipes-infer
 pip3 install -r models/glm_5_3/requirements.txt
 ```
 
-本模型依赖两个算子包：
+本模型使用以下自定义算子包：
 
 | 包 | 提供的算子 |
 |---|---|
 | `custom_ops` | `npu_hc_pre` / `npu_hc_post` |
 | `cann_ops_transformer` | `causal_conv1d_fn` / `causal_conv1d_update` |
 
+
+自定义算子包需排除 `swiglu_group_quant` 并清理旧同名注册，避免与 CANN 9.2.0 的主线实现冲突；其他自定义算子保持原部署方式。
 
 拉起前 source 对应的 vendor 环境：
 

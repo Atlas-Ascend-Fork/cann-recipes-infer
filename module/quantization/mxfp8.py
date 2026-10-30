@@ -280,21 +280,21 @@ class MxFp8MoEGMMMethod(QuantizeMethodBase):
         swiglu_limit = getattr(layer, "swiglu_limit", None)
         if swiglu_limit is None:
             swiglu_limit = kwargs.get("swiglu_limit", None)
-        enable_cann_ops_nn = getattr(layer, "enable_cann_ops_nn", False) \
-            or kwargs.get("enable_cann_ops_nn", False)
-        if enable_cann_ops_nn:
-            # [E, 2] sparse pairs for type-2; None for type-1 (count list).
-            swiglu_expert_tokens = kwargs.get("swiglu_expert_tokens")
-            glt = 2 if swiglu_expert_tokens is not None else 1
-            swiglu_group_index = swiglu_expert_tokens if swiglu_expert_tokens is not None else expert_tokens
+        # [E, 2] sparse pairs for type-2; None for type-1 (count list).
+        swiglu_expert_tokens = kwargs.get("swiglu_expert_tokens")
+        glt = 2 if swiglu_expert_tokens is not None else 1
+        swiglu_group_index = swiglu_expert_tokens if swiglu_expert_tokens is not None else expert_tokens
+        prefer_custom = getattr(layer, "enable_custom_swiglu", False)
+        if layer.should_use_fused_swiglu_quant(glt):
             intermediate_h, pertoken_scale, _ = swiglu_group_quant(
                 mm1_mm3, dst_type=torch.float8_e4m3fn, round_scale=True,
                 quant_mode=1, clamp_limit=swiglu_limit,
                 group_index=swiglu_group_index, group_list_type=glt,
-                prefer_custom=getattr(layer, "enable_custom_swiglu", False))
+                prefer_custom=prefer_custom)
         else:
             mm1_mm3 = torch_npu.npu_swiglu(mm1_mm3)
-            intermediate_h, pertoken_scale = torch_npu.npu_dynamic_mx_quant(mm1_mm3, dst_type=torch.float8_e4m3fn)
+            intermediate_h, pertoken_scale = torch_npu.npu_dynamic_mx_quant(
+                mm1_mm3, dst_type=torch.float8_e4m3fn)
 
         out_hidden = torch_npu.npu_grouped_matmul(
             [intermediate_h], [layer.w2_weight], bias=None,

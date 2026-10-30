@@ -720,9 +720,11 @@ class HYV3MLP(nn.Module):
             merged = torch.cat([gate, up], dim=-1)
 
         if self.enable_swiglu_group_quant and use_swiglu_group_quant:
-            act, act_scale, _ = torch.ops.custom.npu_swiglu_group_quant(
+            import cann_ops_nn
+
+            act, act_scale, _ = torch.ops.cann_ops_nn.swiglu_group_quant(
                 merged,
-                dst_type=torch.float8_e4m3fn,
+                dst_type=torch_npu.float8_e4m3fn,
                 round_scale=True,
                 quant_mode=1,
             )

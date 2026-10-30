@@ -16,9 +16,6 @@
 
 """Common layers and sequence-parallel helpers for HYV3."""
 
-import glob
-import os
-import sysconfig
 from dataclasses import replace
 from functools import lru_cache
 
@@ -30,20 +27,6 @@ from torch import nn
 from module.linear import LinearBase
 
 from ..configuration_hy_v3 import HYV3Config
-
-
-def _load_swiglu_group_quant_op() -> None:
-    """Load the installed swiglu group-quant operator when it is available."""
-    if hasattr(torch.ops.custom, "npu_swiglu_group_quant"):
-        return
-
-    custom_ops_dir = os.path.join(sysconfig.get_paths()["purelib"], "custom_ops")
-    shared_objects = glob.glob(os.path.join(custom_ops_dir, "custom_ops_lib*.so"))
-    if shared_objects:
-        torch.ops.load_library(shared_objects[0])
-
-
-_load_swiglu_group_quant_op()
 
 
 def is_sequence_parallel_enabled(infer_config) -> bool:

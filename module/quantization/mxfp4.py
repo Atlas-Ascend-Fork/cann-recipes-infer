@@ -168,24 +168,23 @@ class W4A8MxFp4MoEGMMMethod(QuantizeMethodBase):
         swiglu_limit = getattr(layer, "swiglu_limit", None)
         if swiglu_limit is None:
             swiglu_limit = kwargs.get("swiglu_limit", None)
-        enable_cann_ops_nn = getattr(layer, "enable_cann_ops_nn", False) \
-            or kwargs.get("enable_cann_ops_nn", False)
-        if enable_cann_ops_nn:
-            swiglu_expert_tokens = kwargs.get("swiglu_expert_tokens")
-            glt = 2 if swiglu_expert_tokens is not None else 1
-            swiglu_group_index = swiglu_expert_tokens if swiglu_expert_tokens is not None else expert_tokens
+        swiglu_expert_tokens = kwargs.get("swiglu_expert_tokens")
+        glt = 2 if swiglu_expert_tokens is not None else 1
+        swiglu_group_index = swiglu_expert_tokens if swiglu_expert_tokens is not None else expert_tokens
+        prefer_custom = getattr(layer, "enable_custom_swiglu", False)
+        if layer.should_use_fused_swiglu_quant(glt):
             intermediate_h, pertoken_scale, _ = swiglu_group_quant(
                 mm1_mm3, dst_type=torch.float8_e4m3fn, round_scale=True,
                 quant_mode=1, clamp_limit=swiglu_limit,
                 group_index=swiglu_group_index, group_list_type=glt,
-                prefer_custom=getattr(layer, "enable_custom_swiglu", False))
+                prefer_custom=prefer_custom)
         else:
             intermediate_h, pertoken_scale = torch_npu.npu_swiglu_mx_quant(
-                                                mm1_mm3,
-                                                group_index=expert_tokens,
-                                                dst_type=torch_npu.float8_e4m3fn,
-                                                activate_left=True,
-                                            )
+                mm1_mm3,
+                group_index=expert_tokens,
+                dst_type=torch_npu.float8_e4m3fn,
+                activate_left=True,
+            )
         out_hidden = torch_npu.npu_grouped_matmul(
             [intermediate_h],
             [layer.w2_weight.transpose(1, 2)], bias=None,
@@ -547,20 +546,20 @@ class UpGateW4A4DownW4A8MxFp4MoEGMMMethod(W4A8MxFp4MoEGMMMethod):
         swiglu_limit = getattr(layer, "swiglu_limit", None)
         if swiglu_limit is None:
             swiglu_limit = kwargs.get("swiglu_limit", None)
-        enable_cann_ops_nn = getattr(layer, "enable_cann_ops_nn", False) \
-            or kwargs.get("enable_cann_ops_nn", False)
-        if enable_cann_ops_nn:
-            swiglu_expert_tokens = kwargs.get("swiglu_expert_tokens")
-            glt = 2 if swiglu_expert_tokens is not None else 1
-            swiglu_group_index = swiglu_expert_tokens if swiglu_expert_tokens is not None else expert_tokens
+        swiglu_expert_tokens = kwargs.get("swiglu_expert_tokens")
+        glt = 2 if swiglu_expert_tokens is not None else 1
+        swiglu_group_index = swiglu_expert_tokens if swiglu_expert_tokens is not None else expert_tokens
+        prefer_custom = getattr(layer, "enable_custom_swiglu", False)
+        if layer.should_use_fused_swiglu_quant(glt):
             intermediate_h, pertoken_scale, _ = swiglu_group_quant(
                 mm1_mm3, dst_type=torch.float8_e4m3fn, round_scale=True,
                 quant_mode=1, clamp_limit=swiglu_limit,
                 group_index=swiglu_group_index, group_list_type=glt,
-                prefer_custom=getattr(layer, "enable_custom_swiglu", False))
+                prefer_custom=prefer_custom)
         else:
             mm1_mm3 = torch_npu.npu_swiglu(mm1_mm3)
-            intermediate_h, pertoken_scale = torch_npu.npu_dynamic_mx_quant(mm1_mm3, dst_type=torch.float8_e4m3fn)
+            intermediate_h, pertoken_scale = torch_npu.npu_dynamic_mx_quant(
+                mm1_mm3, dst_type=torch.float8_e4m3fn)
 
         out_hidden = torch_npu.npu_grouped_matmul(
             [intermediate_h],

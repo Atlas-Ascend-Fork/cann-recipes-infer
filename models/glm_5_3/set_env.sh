@@ -19,7 +19,7 @@ source "${ASCEND_HOME_PATH}/opp/vendors/customize/bin/set_env.bash"
 # cann_ops_transformer causal_conv1d kernels (KDA short conv)
 source "${ASCEND_HOME_PATH}/opp/vendors/custom_transformer/bin/set_env.bash"
 
-# flash_kda / fused_recurrent_kda are a python DSL under ops/cannbot_dsl, so the
+# flash_kda / fused_recurrent_kda are a python DSL under recipes_ops/cannbot_dsl, so the
 # repo root has to be importable (kimi_k3 does the same).
 CURRENT_PATH=$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 RECIPES_PATH=$(dirname "$(dirname "$CURRENT_PATH")")

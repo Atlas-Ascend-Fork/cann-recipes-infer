@@ -86,10 +86,11 @@ class Glm53FFN(nn.Module):
         return self.down_proj(intermediate)
 
     def forward_mxfp8(self, x, enable_decode_stream=False, shared_expert_event=None):
+        import cann_ops_nn
         merged = self.gate_up_proj(x)
-        intermediate, pergroup_scale, _ = torch.ops.custom.npu_swiglu_group_quant(
+        intermediate, pergroup_scale, _ = torch.ops.cann_ops_nn.swiglu_group_quant(
             merged,
-            dst_type=torch.float8_e4m3fn,
+            dst_type=torch_npu.float8_e4m3fn,
             round_scale=True,
             quant_mode=1,          # 1 = MX (per-32-channel e8m0 scale)
             clamp_limit=self.swiglu_limit,
@@ -148,8 +149,7 @@ class Glm53MoE(nn.Module):
             raise NotImplementedError(
                 f"glm_5_3 supports bf16 and W4A8-MXFP4 experts, got {gmm_quant_mode}")
         self.gmm_act_kwargs = ({} if gmm_quant_mode == "w16a16" else
-                               {"swiglu_limit": config.swiglu_limit,
-                                "enable_custom_ops": True})
+                               {"swiglu_limit": config.swiglu_limit})
 
         self.gate = ReplicatedLinear(
             config.hidden_size, self.num_experts, bias=False, quant_config=None,

@@ -45,13 +45,16 @@ Qwen3-MoE模型是2025年开源的大语言模型，包括Qwen3-235B-A22B与Qwen
     > 说明：HCCL相关配置，如：`HCCL_SOCKET_IFNAME`、`HCCL_OP_EXPANSION_MODE`，可以参考[集合通信文档](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900/maintenref/envvar/envref_07_0001.html)并在`executor/scripts/function.sh`中自定义配置。
 
 ## 950系列产品环境准备
+
+本节环境已在 Ascend 950DT aarch64 平台验证。
+
 1. 安装CANN软件包。
 
-   本样例的编译执行依赖CANN开发套件包与CANN二进制算子包，支持的CANN软件版本为`CANN 9.1.0-beta.1`。
+   本样例的编译执行依赖CANN开发套件包与CANN二进制算子包，支持的CANN软件版本为`CANN 9.2.0`。
 
-   请从[软件包下载地址](https://www.hiascend.com/developer/download/community/result?module=cann)下载`Ascend-cann-toolkit_${version}_linux-${arch}.run`与`Ascend-cann-A3-ops_${version}_linux-${arch}.run`软件包，并参考[CANN安装文档](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/910beta1/softwareinst/instg/instg_0090.html?OS=openEuler&InstallType=localpack)进行安装。
+   请从[软件包下载地址](https://www.hiascend.com/developer/download/community/result?module=cann)下载`Ascend-cann-toolkit_${version}_linux-${arch}.run`与`Ascend-cann-950-ops_${version}_linux-${arch}.run`软件包，并参考[CANN 9.2.0软件安装文档](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/920/softwareinst/instg/instg_0003.html)进行安装。
 
-   - `${version}`表示CANN包版本号，如9.1.0-beta.1。
+   - `${version}`表示CANN包版本号，如9.2.0。
    - `${arch}`表示CPU架构，如aarch64、x86_64。
 
 2. 安装Ascend Extension for PyTorch（torch_npu）。

@@ -376,7 +376,6 @@ class DeepseekV41MoE(nn.Module):
             ep_rank=self.comm_manager.get_rank("moe_ep_group") if self.moe_ep_size > 1 else 0,
             prefix=f"{prefix}.experts",
             swiglu_limit=self.swiglu_limit,
-            enable_cann_ops_nn=True,
             enable_custom_swiglu=self.enable_custom_swiglu,
         )
         self.moe_ffn = self.experts
