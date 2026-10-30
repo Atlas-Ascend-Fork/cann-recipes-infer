@@ -8,9 +8,6 @@ Basic Config
   world_size: 128                                   # The world size. Int type
 
 Model Config
-  enable_offload: False            # Whether enable KV offload. Support [False, True]
-  shared_indexer_offload: False    # Whether use the GLM-5.2 shared-indexer offload path. Support [False, True]
-  enlarge_pool_size: False         # Whether enlarge the resident token pool from 8K to 16K for shared-indexer offload. Support [False, True]
   pa_block_size: 128              # PA Block Size value. Support [128, 256]
   enable_weight_nz: True          # Whether use nz-weight format for better performance. Support [False, True]
   with_ckpt: True                 # Whether load ckpt. Support [False, True]
@@ -21,6 +18,10 @@ Model Config
   perfect_eplb: False             # Whether enable, test uniform scenario of MoE experts. Support [False, True]
   enable_online_split_weight: True  # Whether enable online-split weight. Support [False, True]
   next_n: 1                       # Steps using multi-token prediction. Support [0, 1, 2, 3]
+  custom_params:
+    enable_offload: False          # Enable KV offload. Support [False, True]
+    offload_strategy: null         # "avsg" or "shared_indexer"; unset/null uses gatherselection
+    enlarge_pool_size: False       # Expand the shared_indexer resident pool from 8K to 16K
 
 Data Config
   dataset: "default"  # Support ["default" "InfiniteBench" "LongBench"]

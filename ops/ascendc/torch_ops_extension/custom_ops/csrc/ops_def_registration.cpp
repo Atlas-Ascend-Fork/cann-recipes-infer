@@ -16,6 +16,21 @@
 // 在custom命名空间里注册add_custom和npu_sparse_flash_attention和后续的XXX算子，每次新增自定义aten ir都需先增加定义
 // step1, 为新增自定义算子添加定义
 TORCH_LIBRARY(custom, m) {
+    m.def("npu_avsg_match(Tensor(a!) selection_kv_block_table, "
+        "Tensor(b!) selection_kv_block_status, Tensor(c!) selection_topk_indices, Tensor full_kv_block_table, "
+        "Tensor full_kv_actual_seq, Tensor full_q_actual_seq, *, int selection_topk_block_size=64, "
+        "int kv_block_size=128) -> (Tensor, Tensor, Tensor)");
+    m.def("npu_avsg_match_functional(Tensor selection_kv_block_table, "
+        "Tensor selection_kv_block_status, Tensor selection_topk_indices, Tensor full_kv_block_table, "
+        "Tensor full_kv_actual_seq, Tensor full_q_actual_seq, *, int selection_topk_block_size=64, "
+        "int kv_block_size=128) -> (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor)");
+    m.def("npu_avsg_copy(Tensor(a!) selection_k_rope, Tensor(b!) selection_kv_cache, Tensor full_k_rope, "
+        "Tensor full_kv_cache, Tensor full_q_actual_seq, Tensor stage_two_copy_mapping, "
+        "Tensor stage_two_copy_count) -> ()");
+    m.def("npu_avsg_copy_functional(Tensor selection_k_rope, Tensor selection_kv_cache, Tensor full_k_rope, "
+        "Tensor full_kv_cache, Tensor full_q_actual_seq, Tensor stage_two_copy_mapping, "
+        "Tensor stage_two_copy_count) -> (Tensor, Tensor)");
+
     m.def("dsa_plan(Tensor selection_topk_indices, Tensor full_kv_actual_seq, Tensor pool_ids, "
         "Tensor id_to_slot, Tensor lru_counter, *, "
         "int raw_seq=1, int group_id=0, int owner_layer=0, "

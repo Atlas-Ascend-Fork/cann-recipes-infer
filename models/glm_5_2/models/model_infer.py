@@ -56,7 +56,7 @@ class Infer(nn.Module):
         self.tmp_indexer_kv = None
         self.tmp_indexer_ks = None
 
-        self.enable_offload = runner_settings.get("model_config").get("enable_offload", False)
+        self.enable_offload = runner_settings.get("model_config").get("custom_params", {}).get("enable_offload", False)
 
         self.exe_mode = runner_settings.get("exe_mode", "ge_graph")
         self.enable_skip_guard = runner_settings.get("model_config").get("enable_skip_guard", False)

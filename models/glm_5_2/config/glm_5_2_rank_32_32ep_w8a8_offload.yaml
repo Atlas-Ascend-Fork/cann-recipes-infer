@@ -4,7 +4,8 @@ exe_mode: "npugraph_ex"                  # ["ge_graph", "eager", "npugraph_ex"],
 world_size: 32                           # world_size = 2 * chip_num in A3
 
 model_config:
-  enable_offload: True                   # [False, True]
+  custom_params:
+    enable_offload: True                 # [False, True]
   next_n: 0
   pa_block_size: 128
   enable_weight_nz: True

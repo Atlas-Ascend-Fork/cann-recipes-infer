@@ -18,8 +18,9 @@ import torch.nn as nn
 import torch_npu
 
 from .shared_indexer_offload import shared_indexer_offload_enabled
+from .avsg_offload import avsg_offload_enabled
 
-
+_AVSG_POOL_SIZE = 8192
 _DSA_DEFAULT_POOL_SIZE = 8192
 _DSA_LARGE_POOL_SIZE = 16384
 _DSA_SET_ASSOCIATIVITY = 16
@@ -29,7 +30,7 @@ _DEFAULT_PA_MAX_LENGTH = 2048
 
 def resolve_dsa_pool_size(model_config=None):
     model_config = model_config or {}
-    return _DSA_LARGE_POOL_SIZE if bool(model_config.get("enlarge_pool_size", False)) else _DSA_DEFAULT_POOL_SIZE
+    return _DSA_LARGE_POOL_SIZE if bool(model_config.get("custom_params", {}).get("enlarge_pool_size", False)) else _DSA_DEFAULT_POOL_SIZE
 
 
 def resolve_dsa_id_range(model_config):
@@ -102,27 +103,36 @@ class OffloadCache(nn.Module):
         self.index_topk = self.config.index_topk
         self.block_size = self.runner_settings.get("model_config").get("pa_block_size", 128)
 
+        model_config = self.runner_settings.get("model_config", {})
+        self.avsg_offload = avsg_offload_enabled(model_config)
+
         # num of selected blocks per query token
         self.s_maxblocknum = (self.index_topk + self.block_size - 1) // self.block_size
         self.next_n = self.runner_settings.get("model_config").get("next_n", 0)
         # bsz*seq
         batchseq = self.batch_size_per_rank * (1 + self.next_n)
         # total num of selected blocks
-        self.selection_num_blocks = self.s_maxblocknum * batchseq
+        if self.avsg_offload:
+            self.s_maxblocknum = (_AVSG_POOL_SIZE + self.block_size - 1) // self.block_size
+            self.selection_num_blocks = self.s_maxblocknum * self.batch_size_per_rank
+            size = (self.batch_size_per_rank, _AVSG_POOL_SIZE * 2) # [batch, pool slots * 2 int32 words]
+            self.selection_kv_block_table = torch.arange(0, self.selection_num_blocks
+                                        ).reshape(-1, self.s_maxblocknum).to(device="npu", dtype=torch.int32)
+        else:
+            self.selection_num_blocks = self.s_maxblocknum * batchseq
+            size = (self.batch_size_per_rank, 1 + self.next_n, 1, self.index_topk + 1) # bsnd
+            self.selection_kv_block_table = ()
+            for _ in range(self.num_hidden_layers):
+                self.selection_kv_block_table += (torch.arange(0, self.selection_num_blocks
+                                                        ).reshape(batchseq, -1).to(device="npu", dtype=torch.int32),)
 
-        self.selection_kv_block_table = ()
-        for _ in range(self.num_hidden_layers):
-            self.selection_kv_block_table += (torch.arange(0, self.selection_num_blocks
-                                                     ).reshape(batchseq, -1).to(device="npu", dtype=torch.int32),)
         self.selection_kv_block_status = ()
         for _ in range(self.num_hidden_layers):
-            size = (self.batch_size_per_rank, 1 + self.next_n, 1, self.index_topk + 1) # bsnd
             self.selection_kv_block_status += (torch.full(size, -1).to(device="npu", dtype=torch.int32),)
 
         self.d2h_stream = torch.npu.Stream(device="npu")
         self.d2h_event = torch.npu.Event(blocking=True, enable_timing=False)
 
-        model_config = self.runner_settings.get("model_config", {})
         self.pa_max_length = int(model_config.get("pa_max_length", _DEFAULT_PA_MAX_LENGTH))
         # num of blocks of full kv in each batch
         self.cache_len = self.pa_max_length // self.block_size
@@ -133,8 +143,9 @@ class OffloadCache(nn.Module):
             if self.prefill_mini_batch_size > 0 else self.batch_size_per_rank
         self.batch_len = self.cache_len * self.mini_batch
 
-        self.default_topk_indices = torch.arange(self.index_topk, dtype=torch.int32, device="npu")\
-                                    .view(1, -1).repeat(batchseq, 1)
+        if not self.avsg_offload:
+            self.default_topk_indices = torch.arange(self.index_topk, dtype=torch.int32, device="npu")\
+                                        .view(1, -1).repeat(batchseq, 1)
 
         self.kv_cache_quant_mode = self.config.quant_config.kv_cache_quant_mode \
             if self.config.quant_config is not None else "unquant"
@@ -150,7 +161,7 @@ class OffloadCache(nn.Module):
             raise ValueError(
                 f"DSA pool size {self.dsa_pool_size} must be divisible by PA block size {self.block_size}"
             )
-        if self.use_dsa_shared_pool:
+        if self.use_dsa_shared_pool or self.avsg_offload:
             self.dsa_shared_group_specs, self.dsa_layer_to_group = build_dsa_shared_group_specs(
                 getattr(self.config, "indexer_types", None),
                 self.num_hidden_layers,
@@ -254,7 +265,8 @@ class OffloadCache(nn.Module):
             else:
                 self.dsa_pool_key_values += ((None, None),)
 
-        self._init_dsa_shared_metadata(cache_device)
+        if not self.avsg_offload:
+            self._init_dsa_shared_metadata(cache_device)
         return past_key_values
 
     def _init_dsa_shared_metadata(self, cache_device):
@@ -386,6 +398,8 @@ class OffloadCache(nn.Module):
         for i in range(self.num_hidden_layers):
             status = self.selection_kv_block_status[i]
             status.fill_(-1)
+        if self.avsg_offload:
+            return
         for i in range(len(self.dsa_shared_group_specs)):
             self.dsa_shared_pool_ids[i].fill_(-1)
             self.dsa_shared_id_to_slot[i].fill_(-1)

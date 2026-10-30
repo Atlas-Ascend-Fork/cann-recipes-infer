@@ -143,16 +143,52 @@ source ${cann_path}/bin/setenv.bash
 
 ## KV Offload 启用（长序列、大 batch_size 场景，需自定义算子）
 
-GLM-5.2 的 KV offload（`enable_offload: True`）把全量 MLA KV 卸载到 host swapped memory，decode 时按 DSA top-k 把命中 block gather 回 device，面向长上下文（全量 KV 放不下 HBM）场景。开启 `shared_indexer_offload: True` 时，模型会利用 GLM-5.2 的 IndexShare 特性复用同一组 top-k 规划，减少共享层重复的命中判断和缓存管理开销，并将常驻池回填与 SFA、MoE 计算并行。该路径释放 HBM 以支持更长上下文或更大 batch；`enlarge_pool_size: True` 会把设备侧常驻 token 池从 8K 扩大到 16K，进一步提高命中率并减少 host 到 device 的 KV 搬运。
+GLM-5.2 的 KV offload（`enable_offload: True`）把全量 MLA KV 卸载到 host swapped memory，decode 时按 DSA top-k 将所需 KV 搬回 device，面向长上下文或大 batch_size 场景。配置统一放在 `model_config.custom_params` 下：`enable_offload` 控制是否启用 KV offload，`offload_strategy` 可选 `"shared_indexer"` 或 `"avsg"`；启用 offload 且不设置该字段（或设为 `null`）时默认走 gatherselection。
 
-KV offload 方案设计详见[KV offload 技术文档](../../docs/models/glm_5_2/glm_5_2_offload_guide.md)。
+### shared_indexer_offload 方案
 
-KV offload 依赖**仓内自定义 AscendC 算子**（非 torch_npu 内置），须先编译安装：
+设置 `offload_strategy: "shared_indexer"` 时，模型会利用 GLM-5.2 的 IndexShare 特性复用同一组 top-k 规划，减少共享层重复的命中判断和缓存管理开销，并将常驻池回填与 SFA、MoE 计算并行。`enlarge_pool_size: True` 会把设备侧常驻 token 池从 8K 扩大到 16K，以提高命中率并减少 host 到 device 的 KV 搬运。
+
+方案设计详见[shared_indexer_offload 技术文档](../../docs/models/glm_5_2/glm_5_2_offload_guide.md)。
+
+在推理 YAML 中配置如下，其中 `exe_mode` 为顶层字段，offload 配置位于 `model_config.custom_params` 下：
+
+```yaml
+exe_mode: "npugraph_ex"  # 可选 eager、npugraph_ex、ge_graph
+model_config:
+  custom_params:
+    enable_offload: True
+    offload_strategy: "shared_indexer"
+    enlarge_pool_size: False
+```
+
+### AVSG 方案
+
+方案设计详见[avsg_offload 技术文档](../../docs/models/glm_5_2/glm_5_2_avsg_offload_guide.md)。
+
+
+#### 使用方法
+
+在推理 YAML 的 `model_config.custom_params` 中设置 `offload_strategy: "avsg"`：
+
+```yaml
+exe_mode: "npugraph_ex"  # 可选 eager、npugraph_ex、ge_graph
+model_config:
+  custom_params:
+    enable_offload: True
+    offload_strategy: "avsg"
+```
+
+AVSG 依赖仓内的 `avsg_match`、`avsg_copy` 算子及对应的 `torch_ops_extension` 绑定。安装完成后，Runner 会按需加载 AVSG 算子，并根据执行模式注册 GE converters 或 npugraph_ex reinplace 规则，无需手动调用注册函数。
+
+### 自定义算子编译与安装
+
+两种方案均依赖**仓内自定义 AscendC 算子**（非 torch_npu 内置）。在各节点从仓库根目录进入 `ops/ascendc`，按所选方案编译，再安装算子内核和 torch 绑定：
 
 ```bash
-# 1) 编译算子内核（A3 默认 ascend910_93；bisheng 随 CANN 提供）
+# 1) 编译算子内核（A3 默认 ascend910_93；A2 需显式指定 `-c ascend910b`; A5需显式指定 `-c ascend950`;bisheng 随 CANN 提供）
 cd ops/ascendc
-bash build.sh -n "gather_selection_kv_cache;dsa_plan;dsa_serve;dsa_install"  # 安装包位于 output/CANN-custom_ops-*-linux.<arch>.run
+bash build.sh -n "gather_selection_kv_cache;dsa_plan;dsa_serve;dsa_install;avsg_match;avsg_copy"  # 安装包位于 output/CANN-custom_ops-*-linux.<arch>.run
 
 # 2) 安装内核到 CANN opp
 cd output
@@ -166,20 +202,7 @@ bash build_and_install.sh                              # 生成并 pip 安装 cu
 source "${ASCEND_HOME_PATH}/opp/vendors/customize/bin/set_env.bash"
 ```
 
-> `models/modeling_glm.py` 在 import 时自动把基础 offload 算子挂到 `torch_npu.npu_gather_selection_kv_cache`；开启 `shared_indexer_offload` 时，模型 Runner 初始化会按需加载共享 IndexShare offload 相关自定义算子。因此模型侧无需改动，只要上面的算子已安装、且运行前 source 了第 4 步的环境即可。
-
-运行（在 `config/*.yaml` 的 `model_config` 中设置 offload 选项）：
-
-```bash
-enable_offload: True
-shared_indexer_offload: True
-enlarge_pool_size: False
-# eager
-exe_mode: "eager"
-# 或图模式
-exe_mode: "npugraph_ex"
-```
-
+> `models/modeling_glm.py` 在 import 时自动把基础 offload 算子挂到 `torch_npu.npu_gather_selection_kv_cache`；将 `offload_strategy` 设为 `"shared_indexer"` 或 `"avsg"` 时，模型 Runner 初始化会按需加载共享 IndexShare offload 或 avsg 相关自定义算子。因此模型侧无需改动，只要上面的算子已安装、且运行前 source 了第 4 步的环境即可。
 
 ## 附录
 ### FAQ

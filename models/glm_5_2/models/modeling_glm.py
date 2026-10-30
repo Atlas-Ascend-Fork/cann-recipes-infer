@@ -56,6 +56,7 @@ from .custom_op_loader import (
     load_offload_gather_op,
     register_offload_ge_converter,
     register_dsa_shared_ge_converters,
+    register_avsg_ge_converters,
 )
 
 # Mount the custom offload-gather op onto torch_npu (no-op if not installed); see custom_op_loader.
@@ -67,6 +68,11 @@ from .offload_cache import OffloadCache
 from .shared_indexer_offload import (
     shared_indexer_offload_enabled,
     run_shared_indexer_offload,
+)
+
+from .avsg_offload import (
+    avsg_offload_enabled,
+    run_avsg_offload,
 )
 
 logger = logging.get_logger(__name__)
@@ -839,7 +845,8 @@ class GlmMoeDsaAttention(nn.Module):
                 .reshape(prefill_mini_batch_size, -1).to(dtype=torch.int32, device="npu")
         model_config = self.runner_settings.get("model_config", {})
         self.shared_indexer_offload = shared_indexer_offload_enabled(model_config) and not kwargs.get("is_mtp", False)
-        self.dsa_static_identity_pa = self.shared_indexer_offload
+        self.avsg_offload = avsg_offload_enabled(model_config) and not kwargs.get("is_mtp", False)
+        self.dsa_static_identity_pa = self.shared_indexer_offload or self.avsg_offload
 
         self.enable_weight_nz = runner_settings.get("model_config").get("enable_weight_nz", True)
 
@@ -873,6 +880,9 @@ class GlmMoeDsaAttention(nn.Module):
         self.kv_cache_quant_mode = config.quant_config.kv_cache_quant_mode \
             if config.quant_config is not None else "unquant"
 
+        if self.avsg_offload and self.kv_cache_quant_mode != "unquant":
+            raise ValueError("AVSG offload supports unquant KV/rope only")
+
         self.li_cache_quant_mode = config.quant_config.li_cache_quant_mode \
             if config.quant_config is not None else "unquant"
 
@@ -882,7 +892,7 @@ class GlmMoeDsaAttention(nn.Module):
             # Its shape can be specified arbitrarily, but one of its dimensions must be 0
             self.fake_kr_cache = torch.empty((1, 2, 1, 0), dtype=torch.bfloat16, device="npu")
 
-        self.enable_offload = self.runner_settings.get("model_config").get("enable_offload", False)
+        self.enable_offload = self.runner_settings.get("model_config").get("custom_params", {}).get("enable_offload", False)
         self.index_topk = self.config.index_topk
         self.last_dim = self.kv_lora_rank + self.qk_rope_head_dim * 2 + 4 * 4 \
             if self.kv_cache_quant_mode != "unquant" else self.kv_lora_rank
@@ -1487,7 +1497,9 @@ class GlmMoeDsaAttention(nn.Module):
             full_kv_cache = k_nope.squeeze(2)
             full_k_rope = k_pe.squeeze(2) if self.kv_cache_quant_mode == "unquant" else offload_cache.empty_rope
 
-            selection_kv_block_table = offload_cache.selection_kv_block_table[self.layer_idx]
+            selection_kv_block_table = offload_cache.selection_kv_block_table
+            if not self.avsg_offload:
+                selection_kv_block_table = selection_kv_block_table[self.layer_idx]
             selection_kv_block_status = offload_cache.selection_kv_block_status[self.layer_idx]
 
             topk_indices = topk_indices.view(bsz, -1, 1, self.index_topk)
@@ -1525,6 +1537,22 @@ class GlmMoeDsaAttention(nn.Module):
                     install_events=self.dsa_install_events,
                     exe_mode=self.exe_mode,
                 )
+            elif self.avsg_offload:
+                selection_kv_cache, selection_k_rope, topk_indices, selection_kv_block_table = run_avsg_offload(
+                    layer_idx=self.layer_idx,
+                    kv_block_size=self.block_size,
+                    topk_indices=topk_indices,
+                    actual_seq_qlen=actual_seq_qlen.to(torch.int32),
+                    full_kv_actual_seq=actual_seq_lengths_kv.to(torch.int32),
+                    full_kv_cache=full_kv_cache,
+                    full_k_rope=full_k_rope,
+                    block_table=block_table,
+                    selection_kv_cache=selection_kv_cache,
+                    selection_k_rope=selection_k_rope,
+                    selection_kv_block_table=selection_kv_block_table,
+                    selection_kv_block_status=selection_kv_block_status,
+                    offload_cache=offload_cache,)
+
             elif reuse_shared_topk and offload_cache.enable_mtp_gather_reuse:
                 # MTP draft reuse step: top-k is frozen to the first decode step's selection, so the
                 # already-gathered selection buffer (selection_kv_cache / selection_k_rope) and status
@@ -1541,15 +1569,21 @@ class GlmMoeDsaAttention(nn.Module):
                     block_table, actual_seq_lengths_kv,
                     actual_seq_qlen, selection_topk_block_size=1)
 
-            default_topk_indices = offload_cache.default_topk_indices
-            sparse_indices = torch.where(default_topk_indices < selection_kv_actual_seq.unsqueeze(1), \
-                                         default_topk_indices, -1)
+            if not self.avsg_offload:
+                default_topk_indices = offload_cache.default_topk_indices
+                sparse_indices = torch.where(default_topk_indices < selection_kv_actual_seq.unsqueeze(1), \
+                                            default_topk_indices, -1)
+                actual_seq_lengths_query = torch.arange(1, bsz * q_len + 1, dtype=torch.int32, device="npu")
+            else:
+                sparse_indices = topk_indices
+                selection_kv_actual_seq = actual_seq_lengths_kv.to(torch.int32)
+                actual_seq_lengths_query = actual_seq_qlen.to(torch.int32)
 
             slc_fa_input_kwargs = {
                 "query": q_nope,
                 "sparse_indices": sparse_indices.view(-1, 1, self.index_topk), # [bsz*seq, 1, topk]
                 "scale_value": self.softmax_scale,
-                "actual_seq_lengths_query": torch.arange(1, bsz * q_len + 1, dtype=torch.int32, device="npu"),
+                "actual_seq_lengths_query": actual_seq_lengths_query,
                 "actual_seq_lengths_kv": selection_kv_actual_seq, # [bsz*seq]
                 "block_table": selection_kv_block_table,
                 "sparse_block_size": 1,
@@ -1557,7 +1591,6 @@ class GlmMoeDsaAttention(nn.Module):
                 "layout_kv": 'PA_BSND',
                 "sparse_mode": 3,
             }
-
             slc_fa_input_kwargs.update({
                 "key": selection_kv_cache.unsqueeze(2),
                 "value": selection_kv_cache.unsqueeze(2),
@@ -1615,7 +1648,7 @@ class GlmMoeDsaDecoderLayer(nn.Module):
         self.layer_idx = layer_idx
         self.runner_settings = runner_settings
         self.hidden_size = config.hidden_size
-        self.enable_offload = self.runner_settings.get("model_config").get("enable_offload", False)
+        self.enable_offload = self.runner_settings.get("model_config").get("custom_params", {}).get("enable_offload", False)
 
         self.self_attn = GlmMoeDsaAttention(
             config=config,
@@ -2016,6 +2049,7 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel):
         self.exe_mode = runner_settings.get("exe_mode", "ge_graph")
         model_config = self.runner_settings.get("model_config", {})
         self.shared_indexer_offload = shared_indexer_offload_enabled(model_config) and not self.is_mtp
+        self.avsg_offload = avsg_offload_enabled(model_config) and not self.is_mtp
         self.local_rank = int(os.getenv("LOCAL_RANK", "0"))
         self.rank_offset = int(os.getenv("RANK_OFFSET", "0"))
         self.global_rank = self.local_rank + self.rank_offset
@@ -2080,7 +2114,7 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel):
                 # Non-MTP, or index_share off: keep the SINGLE graph exactly as before (behavior unchanged).
                 self.cached_decode = self.get_cached_graph()
         self.enable_prefill_multi_cycle = self.runner_settings.get("model_config").get("prefill_mini_batch_size", 0) > 0
-        self.enable_offload = self.runner_settings.get("model_config").get("enable_offload", False)
+        self.enable_offload = self.runner_settings.get("model_config").get("custom_params", {}).get("enable_offload", False)
 
     @staticmethod
     def _reorder_cache(past_key_values, beam_idx):
@@ -2159,13 +2193,15 @@ class GlmMoeDsaForCausalLM(GlmMoeDsaPreTrainedModel):
                 "frozen_parameter": True,
                 "static_kernel_compile": self.enable_static_kernel,
             }
-            if self.shared_indexer_offload and not self.is_mtp:
+            if (self.avsg_offload or self.shared_indexer_offload) and not self.is_mtp:
                 compile_options["clone_input"] = False
             cached_decode = torch.npu.npugraph_ex.inference.cache_compile(cache_model, cache_dir=cache_dir,
                                                                           dynamic=False, options=compile_options)
         else:
             if self.shared_indexer_offload:
                 register_dsa_shared_ge_converters()
+            elif self.avsg_offload:
+                register_avsg_ge_converters()
             tng_config = tng.CompilerConfig()
             tng_config.experimental_config.frozen_parameter = True
             tng_config.experimental_config.tiling_schedule_optimize = True

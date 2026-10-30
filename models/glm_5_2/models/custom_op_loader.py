@@ -32,6 +32,7 @@ import torch_npu
 _REGISTERED_CONVERTERS = set()
 _LOADED_HELPER_MODULES = {}
 _DSA_NPUGRAPH_PATCHED_MODULES = None
+_AVSG_NPUGRAPH_PATCHED_MODULES = None
 
 
 def _custom_ops_dir():
@@ -137,6 +138,36 @@ def register_dsa_shared_ge_converters():
         _register_converter(converter_name)
 
 
+def register_avsg_ge_converters():
+    """Register GE converters for the AvsgMatch/AvsgCopy route."""
+    # AVSG Functionalize kernels are already registered by the C++ extension.
+    for converter_name in ("npu_avsg_match", "npu_avsg_copy"):
+        _register_converter(converter_name)
+        if converter_name not in _REGISTERED_CONVERTERS:
+            raise RuntimeError(f"{converter_name}.py is missing from the installed custom ops")
+
+
+def register_avsg_npugraph_reinplace():
+    """Register AVSG functional/inplace pairs with TorchAir's stream checks."""
+    global _AVSG_NPUGRAPH_PATCHED_MODULES
+    if _AVSG_NPUGRAPH_PATCHED_MODULES is not None:
+        return _AVSG_NPUGRAPH_PATCHED_MODULES
+    module_name = "avsg_inplace_registration"
+    for custom_ops_dir in _candidate_custom_ops_dirs():
+        path = os.path.join(custom_ops_dir, "converter", f"{module_name}.py")
+        if os.path.isfile(path):
+            break
+    else:
+        raise RuntimeError(f"{module_name}.py is missing from the installed custom ops")
+    spec = importlib.util.spec_from_file_location(f"_glm52_{module_name}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    count = mod.register_avsg_inplace_pairs()
+    _LOADED_HELPER_MODULES[module_name] = mod
+    _AVSG_NPUGRAPH_PATCHED_MODULES = count
+    return count
+
+
 def register_dsa_shared_npugraph_reinplace():
     """Install DSA-only TorchAir reinplace checks without importing custom_ops."""
     global _DSA_NPUGRAPH_PATCHED_MODULES
@@ -197,6 +228,34 @@ def load_dsa_shared_custom_ops(register_ge_converters=False, register_npugraph_r
         return all(_custom_op_registered(op_name) for op_name in required_ops)
     if register_npugraph_reinplace:
         register_dsa_shared_npugraph_reinplace()
+    return all(
+        _custom_op_registered(op_name) and _custom_op_has_privateuse1(op_name)
+        for op_name in required_ops
+    )
+
+
+def load_avsg_custom_ops(register_ge_converters=False, register_npugraph_reinplace=False):
+    """Load avsg shared custom ops for eager, npugraph_ex, and ge_graph.
+
+    GE graph can run with schema/Meta registration plus converters. Eager and
+    npugraph_ex need real PrivateUse1 kernels; otherwise torch will CPU-fallback
+    inside graph capture and fail on host-device copies.
+    """
+    required_ops = (
+        "npu_avsg_match",
+        "npu_avsg_copy",
+        "npu_avsg_match_functional",
+        "npu_avsg_copy_functional",
+    )
+    if not _load_custom_ops_library("npu_avsg_match"):
+        return False
+    if not all(_custom_op_registered(op_name) for op_name in required_ops):
+        return False
+    if register_ge_converters:
+        register_avsg_ge_converters()
+        return True
+    if register_npugraph_reinplace:
+        register_avsg_npugraph_reinplace()
     return all(
         _custom_op_registered(op_name) and _custom_op_has_privateuse1(op_name)
         for op_name in required_ops

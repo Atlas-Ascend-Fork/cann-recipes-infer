@@ -4,9 +4,6 @@ exe_mode: "npugraph_ex"                  # ["ge_graph", "eager", "npugraph_ex"],
 world_size: 32                           # world_size = 2 * chip_num in A3
 
 model_config:
-  enable_offload: True                   # [False, True]
-  shared_indexer_offload: True           # [False, True]
-  enlarge_pool_size: False               # [False, True]
   next_n: 3
   pa_block_size: 128
   enable_weight_nz: True
@@ -17,6 +14,10 @@ model_config:
   enable_cache_compile: False            # [False, True]
   enable_online_split_weight: True       # [False, True]
   prefill_mini_batch_size: 1
+  custom_params:
+    enable_offload: True                 # [False, True]
+    offload_strategy: "avsg"             # ["avsg", "shared_indexer"]; omit for gatherselection
+    enlarge_pool_size: False             # [False, True]; shared_indexer only
 
 data_config:
   dataset: default

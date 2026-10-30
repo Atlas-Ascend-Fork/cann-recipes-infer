@@ -17,6 +17,14 @@
   |   ├── gather_selection_kv_cache             # 推理gather_selection_kv_cache算子示例代码
   |   |   ├── op_host                           # 算子信息库、Tiling、InferShape相关实现目录
   |   |   ├── op_kernel                         # 算子Kernel目录
+  |   ├── avsg_match                            # 推理avsg_match算子示例代码
+  |   |   ├── op_api                            # ACLNN接口声明与实现、参数校验及执行器构建
+  |   |   ├── op_host                           # 算子信息库、Tiling、InferShape相关实现目录
+  |   |   ├── op_kernel                         # 算子Kernel目录
+  |   ├── avsg_copy                             # 推理avsg_copy算子示例代码
+  |   |   ├── op_api                            # ACLNN接口声明与实现、参数校验及执行器构建
+  |   |   ├── op_host                           # 算子信息库、Tiling、InferShape相关实现目录
+  |   |   ├── op_kernel                         # 算子Kernel目录
   |   ├── hc_post                               # 推理hc_post算子示例代码
   |   |   ├── op_host                           # 算子信息库、Tiling、InferShape相关实现目录
   |   |   ├── op_kernel                         # 算子Kernel目录

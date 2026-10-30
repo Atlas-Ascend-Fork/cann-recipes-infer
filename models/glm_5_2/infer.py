@@ -22,6 +22,7 @@ import torch
 from runner_glm import GlmRunner
 from models.model_infer import Infer
 from models.shared_indexer_offload import shared_indexer_offload_enabled
+from models.avsg_offload import avsg_offload_enabled
 from executor.utils import update_settings, align_up, read_yaml
 from executor.utils.data_utils import generate_prompt
 
@@ -53,9 +54,10 @@ def run_glm(runner_settings):
     next_n = runner_settings.get("model_config").get("next_n", 0)
     if next_n > 0:
         runner_settings_mtp = runner_settings
-        if shared_indexer_offload_enabled(runner_settings.get("model_config", {})):
+        if shared_indexer_offload_enabled(runner_settings.get("model_config", {})) or \
+            avsg_offload_enabled(runner_settings.get("model_config", {})):
             runner_settings_mtp = copy.deepcopy(runner_settings)
-            runner_settings_mtp["model_config"]["enable_offload"] = False
+            runner_settings_mtp["model_config"]["custom_params"]["enable_offload"] = False
         model_runner_mtp = GlmRunner(runner_settings_mtp)
         model_runner_mtp.init_model(is_mtp=True)
         # the mtp modules share embed, lm_head, rotary_emb with the main model
@@ -73,7 +75,7 @@ def run_glm(runner_settings):
     past_key_scales_indexer = input_dict_main['past_key_scales_indexer']
     past_key_scales_indexer_mtp = input_dict_mtp['past_key_scales_indexer'] if next_n > 0 else None
 
-    enable_offload = runner_settings.get("model_config").get("enable_offload", False)
+    enable_offload = runner_settings.get("model_config").get("custom_params", {}).get("enable_offload", False)
     offload_cache = None
     offload_cache_mtp = None
     if enable_offload:
@@ -133,6 +135,14 @@ def check_model_settings(world_size, runner_settings):
     enable_superkernel = runner_settings.get("model_config").get("enable_superkernel", False)
     next_n = runner_settings.get("model_config").get("next_n", 0)
     prefill_mini_batch_size = runner_settings.get("model_config").get("prefill_mini_batch_size", 0)
+
+    model_config = runner_settings.get("model_config", {})
+    custom_params = model_config.get("custom_params", {})
+    offload_strategy = custom_params.get("offload_strategy")
+    if offload_strategy not in (None, "avsg", "shared_indexer"):
+        raise ValueError('offload_strategy must be "avsg", "shared_indexer", or unset (gatherselection).')
+    if offload_strategy is not None and not custom_params.get("enable_offload", False):
+        raise ValueError("offload_strategy requires custom_params.enable_offload=True.")
 
     if exe_mode not in ["ge_graph", "eager", "npugraph_ex"]:
         raise ValueError(f"{exe_mode=} is not supported!")

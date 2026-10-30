@@ -14,8 +14,8 @@
 # limitations under the License.
 """Shared-indexer offload helpers for GLM-5.2.
 
-The production model path is selected by ``shared_indexer_offload: True`` in
-the model config. This module keeps only model-route orchestration; operator
+The production model path is selected by ``offload_strategy: "shared_indexer"`` in
+``model_config.custom_params`` with ``enable_offload: True``. This module keeps only model-route orchestration; operator
 shape and tiling contracts are validated by the custom operators.
 """
 
@@ -34,7 +34,8 @@ from executor.utils.stream_utils import (
 def shared_indexer_offload_enabled(model_config: dict | None = None) -> bool:
     if model_config is None:
         return False
-    return bool(model_config.get("enable_offload", False)) and bool(model_config.get("shared_indexer_offload", False))
+    custom_params = model_config.get("custom_params", {})
+    return bool(custom_params.get("enable_offload", False)) and custom_params.get("offload_strategy") == "shared_indexer"
 
 
 def run_shared_indexer_offload(
