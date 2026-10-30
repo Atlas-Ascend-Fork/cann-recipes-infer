@@ -185,7 +185,7 @@ class Compressor(nn.Module):
         decode_state_cache: torch.Tensor,
         attn_metadata: Dict,
     ):
-        # In offline scenarios, when CP is enabled for prefill, the temporary state cache values 
+        # In offline scenarios, when CP is enabled for prefill, the temporary state cache values
         # must be synchronized and flushed to the real cache used for decode inference.
         state_key = f"c{self.compress_ratio}a_cmp_state"
         tmp_block_table = attn_metadata["cp_metadata"]["tmp_block_table"][state_key]
@@ -226,13 +226,17 @@ class Compressor(nn.Module):
         if "index" in self.prefix:
             li_cmp_cache = cache_getter("li_cmp_kv")
             scale_cache = cache_getter("li_key_dequant_scale")
-            if self.li_cache_quant_mode in ("float8", "hifloat8"):
+            if self.li_cache_quant_mode in ("float8", "mxfloat4", "hifloat8"):
                 quant_cache_kwargs = {
                     "x": kv,
                     "slot_mapping": cmp_slot_mapping,
                     "cache": li_cmp_cache,
                     "cache_scale": scale_cache,
-                    "quant_mode": "hifloat8" if self.li_cache_quant_mode == "hifloat8" else "fp8",
+                    "quant_mode": {
+                        "float8": "fp8",
+                        "mxfloat4": "mxfp4",
+                        "hifloat8": "hifloat8",
+                    }[self.li_cache_quant_mode],
                 }
                 if self.li_cache_quant_mode == "hifloat8":
                     quant_cache_kwargs["slot_mapping"] = cmp_slot_mapping.to(
@@ -313,7 +317,7 @@ class Compressor(nn.Module):
                 f"{self.compress_ratio}", None
             )
             if decode_slot_mapping is not None:
-                # In offline scenarios, when CP is enabled for prefill, the temporary compressed cache values 
+                # In offline scenarios, when CP is enabled for prefill, the temporary compressed cache values
                 # must be synchronized and flushed to the real cache used for decode inference.
                 self.update_compress_cache(
                     kv,

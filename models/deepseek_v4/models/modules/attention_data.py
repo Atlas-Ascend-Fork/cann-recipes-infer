@@ -78,20 +78,26 @@ class AttnMetaData(nn.Module):
         self.li_cache_quant_mode = config.quant_config.li_cache_quant_mode
         self.init_cache_dim()
         self.cache_dtype_map = {
-            "int8": torch.int8, "float8": torch.float8_e4m3fn, "unquant": torch.bfloat16, "hifloat8": torch.uint8
+            "int8": torch.int8,
+            "float8": torch.float8_e4m3fn,
+            "unquant": torch.bfloat16,
+            "hifloat8": torch.uint8,
+            "mxfloat4": torch.float4_e2m1fn_x2
         }
 
     def update_kv_quant_settings(self):
-        # set li_cache_quant_mode to quant_config
-        self.config.quant_config.set_quant_mode("li_cache_quant_mode", "unquant")
-
         # if quant to hif8/fp8/mxfp8, set kv cache and li cache accordingly; if quant to int8, set li cache to int8
         if self.platform_version == PlatformVersion.ASCEND_950 and "hifloat" in self.mm_quant_mode:
             self.config.quant_config.kv_cache_quant_mode = "hifloat8"
             self.config.quant_config.li_cache_quant_mode = "hifloat8"
         elif self.platform_version == PlatformVersion.ASCEND_950 and "float" in self.mm_quant_mode:
             self.config.quant_config.kv_cache_quant_mode = "float8"
-            self.config.quant_config.li_cache_quant_mode = "float8"
+            if (self.config.quant_config.li_cache_quant_mode is None or
+                    self.config.quant_config.li_cache_quant_mode == "unquant"):
+                self.config.quant_config.li_cache_quant_mode = "float8"
+            elif "float4" in self.config.quant_config.li_cache_quant_mode:
+                # MXFP4 LI cache is independent of the Linear weight quant mode.
+                self.config.quant_config.li_cache_quant_mode = "mxfloat4"
         else:
             self.config.quant_config.li_cache_quant_mode = "int8"
 
@@ -123,7 +129,12 @@ class AttnMetaData(nn.Module):
         return self.cache_dtype_map[self.kv_cache_quant_mode]
 
     def create_cache(self, block_num, dim, dtype, device):
-        return torch.zeros((block_num, self.block_size, 1, dim), dtype=dtype, device=device)
+        shape = (block_num, self.block_size, 1, dim)
+        # Ascend does not implement zeros for E8M0. Allocate its one-byte
+        # physical storage as uint8, then restore the logical dtype for kernels.
+        if dtype == torch.float8_e8m0fnu:
+            return torch.zeros(shape, dtype=torch.uint8, device=device).view(dtype)
+        return torch.zeros(shape, dtype=dtype, device=device)
 
     def create_state_cache(self, state_block_num, compress_ratio, cache_dim, device):
         assert compress_ratio in (4, 128)
@@ -267,14 +278,22 @@ class AttnMetaData(nn.Module):
                     ratio, state_block_num, device),
             }
             if ratio == 4:
+                li_cache_dim = self.config.index_head_dim
+                if self.li_cache_quant_mode == "mxfloat4":
+                    li_cache_dim = self.config.index_head_dim // 2
+                scale_dtype = (
+                    torch.float8_e8m0fnu
+                    if self.li_cache_quant_mode == "mxfloat4"
+                    else torch.float16 if self.li_cache_quant_mode == "int8" else torch.float32
+                )
                 ratio_cache.update({
                     "li_cmp_kv": self.create_cache(
-                        cmp_block_num, self.config.index_head_dim, li_cache_dtype, device),
+                        cmp_block_num, li_cache_dim, li_cache_dtype, device)
                 })
-                if self.li_cache_quant_mode in ["int8", "float8", "hifloat8"]:
-                    scale_dtype = torch.float16 if self.li_cache_quant_mode == "int8" else torch.float32
+                if self.li_cache_quant_mode in ["int8", "float8", "hifloat8", "mxfloat4"]:
+                    scale_dim = self.config.index_head_dim // 32 if self.li_cache_quant_mode == "mxfloat4" else 1
                     ratio_cache["li_key_dequant_scale"] = self.create_cache(
-                        cmp_block_num, 1, scale_dtype, device)
+                        cmp_block_num, scale_dim, scale_dtype, device)
 
             tmp_cache[str(ratio)] = ratio_cache
 

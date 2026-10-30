@@ -280,7 +280,7 @@ def hif8_weight_quant(tensor: torch.Tensor, bits=8, weight_clip_factor=None):
     return quantized_tensor, scale
 
 
-def main(fp8_path, output_path, quant_type, quant_param_path=None):
+def main(fp8_path, output_path, quant_type, quant_param_path=None, li_cache_bit=NUM_BITS_8):
     """
     Converts FP8 weights to BF16 and saves the converted weights.
 
@@ -332,11 +332,18 @@ def main(fp8_path, output_path, quant_type, quant_param_path=None):
     mx = "mx" in quant_parts
     hif = quant_type.endswith('hif')
 
+    if li_cache_bit == NUM_BITS_4 and not mx:
+        raise ValueError("4-bit MXFP4 LI cache requires an MX quant_type "
+                         "(w8a8-mx / w4a8-mx / w4a4-mx)")
+    if hif and li_cache_bit == NUM_BITS_4:
+        raise ValueError("HiF8 quantization fixes the LI cache to HiFloat8; "
+                         "li_cache_bit=4 is incompatible with hif quant types")
+
     if w8a8 or w4:
         cache_scheme = {"kv_cache_scheme": {"num_bits": NUM_BITS_8, "type": "float"} if mx else None,
                         "li_cache_scheme": {
                             "type": "float" if mx else "int",
-                            "num_bits": NUM_BITS_8,
+                            "num_bits": li_cache_bit,
                         }}
         if mx and w8a8 and not hif:
             config['quantization_config']["quant_method"] = "mxfp8"
@@ -483,7 +490,13 @@ if __name__ == "__main__":
                         choices=["w8a8-int", "w4a8-int", "bfloat16", "w4a8-mx", "w4a4-mx",
                                  "w4a8-mx-hif"])
     parser.add_argument("--quant_param_path", type=str, default=None)
+    # 默认使用8-bit LI cache；MX量化场景需要A4C4时执行：
+    # python utils/convert_model.py --input_fp8_hf_path /path/to/model \
+    #     --output_hf_path /path/to/output --quant_type w4a4-mx --li_cache_bit 4
+    parser.add_argument("--li_cache_bit", type=int, choices=[NUM_BITS_4, NUM_BITS_8],
+                        default=NUM_BITS_8,
+                        help="LI cache bit width for MX quantization: 4 enables the MXFP4; default is 8-bit LI cache")
     args = parser.parse_args()
 
     main(args.input_fp8_hf_path, args.output_hf_path,
-         args.quant_type, args.quant_param_path)
+         args.quant_type, args.quant_param_path, args.li_cache_bit)

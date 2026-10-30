@@ -45,6 +45,11 @@ from .common_modules import DeepseekV3RMSNorm, apply_rotary_emb, rotate_activati
     partial_rotary_mul_quant, get_total_aic_num
 from .compressor import Compressor
 
+# MXFP4 uses one E8M0 scale for every 32 logical elements.  The operator
+# exposes the scales as two lanes of d/64 rather than a flat d/32 dimension.
+MXFP4_SCALE_GROUP_SIZE = 32
+MXFP4_SCALE_LANES = 2
+
 
 class Indexer(nn.Module):
     def __init__(self, config, infer_config: InferenceConfig, layer_idx: Optional[int] = None, compress_ratio: int = 4,
@@ -216,6 +221,15 @@ class Indexer(nn.Module):
                 elif self.li_cache_quant_mode == "hifloat8":
                     q = q.view(-1, self.n_heads, self.head_dim)
                     q_scale = self.q_scale_ones
+                elif self.li_cache_quant_mode == "mxfloat4":
+                    q, q_scale = torch_npu.npu_dynamic_mx_quant(q, dst_type=torch_npu.float4_e2m1fn_x2)
+                    q = q.view(-1, self.n_heads, q.shape[-1])
+                    q_scale = q_scale.view(torch.float8_e8m0fnu).view(
+                        -1,
+                        self.n_heads,
+                        self.head_dim // (MXFP4_SCALE_GROUP_SIZE * MXFP4_SCALE_LANES),
+                        MXFP4_SCALE_LANES,
+                    )
                 else: # fp8
                     q, q_scale = torch_npu.npu_dynamic_block_quant(
                         q.view(-1, q.shape[-1]),
@@ -284,15 +298,27 @@ class Indexer(nn.Module):
             block_table = attn_metadata["tmp_block_table"][block_table_key]
         else:
             block_table = attn_metadata["block_table"][block_table_key]
-        # Lightning Indexer quant modes: 1: FP8 E4M3, 2: INT8, 4: HiFloat8.
-        quant_mode = {"int8": 2, "hifloat8": 4}.get(self.li_cache_quant_mode, 1)
+        # Lightning Indexer quant modes: 1: FP8, 2: INT8, 4: HiFloat8,
+        # 5: MXFP4.
+        quant_mode = {
+            "int8": 2,
+            "hifloat8": 4,
+            "mxfloat4": 5,
+        }.get(self.li_cache_quant_mode, 1)
         if self.li_cache_quant_mode == "hifloat8":
             k_scale = self.q_scale_ones.to(
                 device=k_scale.device, dtype=k_scale.dtype
             ).contiguous()
+        elif self.li_cache_quant_mode == "mxfloat4":
+            k_scale = k_scale.view(
+                k_scale.shape[0],
+                k_scale.shape[1],
+                k_scale.shape[2],
+                self.head_dim // (MXFP4_SCALE_GROUP_SIZE * MXFP4_SCALE_LANES),
+                MXFP4_SCALE_LANES,
+            ).view(torch.float8_e8m0fnu)
         else:
             k_scale = k_scale.squeeze(-2)
-
         li_input_kwargs = {
             "query": q,
             "key": k,

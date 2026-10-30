@@ -82,6 +82,7 @@ class QuantizationConfig(ABC):
         self.mm_quant_mode = "w16a16"
         self.gmm_quant_mode = "w16a16"
         self.kv_cache_quant_mode = "unquant"
+        self.li_cache_quant_mode = "unquant"
 
     @abstractmethod
     def get_name(self) -> QuantizationMethods:

@@ -110,6 +110,11 @@ class CompressedTensorsConfig(QuantizationConfig):
         if kv_cache_scheme is not None:
             quant_config_instance.kv_cache_quant_mode = \
                 kv_cache_scheme.get("type", "int") + str(kv_cache_scheme.get("num_bits", 8))
+
+        li_cache_scheme = config.get("li_cache_scheme")
+        if li_cache_scheme is not None:
+            quant_config_instance.li_cache_quant_mode = (li_cache_scheme.get("type", "int") +
+                                                         str(li_cache_scheme.get("num_bits", 8)))
         return quant_config_instance
 
     @classmethod

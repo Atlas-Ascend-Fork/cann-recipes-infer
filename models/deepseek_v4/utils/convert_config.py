@@ -123,7 +123,7 @@ def generate_quant_config(cache_scheme, ignores, w4a8=False, is_fp=False, is_mx=
                 a_num_bits=moe_activation_bits,
                 w_num_bits=NUM_BITS_4,
                 qtype=qtype,
-                is_mx=is_fp,  # W4 routed experts use MXFP4 for float quantization.
+                is_mx=is_fp,  # only support mxfp4 for w4a8 with float type
                 )
             )
     if hif:
@@ -131,7 +131,7 @@ def generate_quant_config(cache_scheme, ignores, w4a8=False, is_fp=False, is_mx=
     return quant_config
 
 
-def main(fp8_path, hif=False, moe_activation_bits=NUM_BITS_8):
+def main(fp8_path, hif=False, moe_activation_bits=NUM_BITS_8, li_cache_bit=NUM_BITS_8):
     config_file = os.path.join(fp8_path, 'config.json')
     with open(config_file, "r") as f:
         config = json.load(f)
@@ -140,7 +140,7 @@ def main(fp8_path, hif=False, moe_activation_bits=NUM_BITS_8):
     cache_scheme = {"kv_cache_scheme": {"num_bits": NUM_BITS_8, "type": "float"},
                     "li_cache_scheme": {
                         "type": "float",
-                        "num_bits": NUM_BITS_8,
+                        "num_bits": li_cache_bit,
                     }}
     if 'quantization_config' in config:
         config.pop('quantization_config')
@@ -170,5 +170,9 @@ if __name__ == "__main__":
     parser.add_argument("--moe_activation_bits", type=int, choices=[NUM_BITS_4, NUM_BITS_8],
                         default=NUM_BITS_8,
                         help="MoE activation bit width: 8 for W4A8 (default), 4 for A4W4 MXFP4.")
+    parser.add_argument("--li_cache_bit", type=int, choices=[NUM_BITS_4, NUM_BITS_8],
+                        default=NUM_BITS_8,
+                        help="LI cache bit width: 4 enables the MXFP4 LI cache; default is 8-bit LI cache")
     args = parser.parse_args()
-    main(args.input_fp8_hf_path, hif=args.hif, moe_activation_bits=args.moe_activation_bits)
+    main(args.input_fp8_hf_path, hif=args.hif, moe_activation_bits=args.moe_activation_bits,
+         li_cache_bit=args.li_cache_bit)

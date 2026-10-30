@@ -88,6 +88,7 @@ from .modules import (get_window_topk_idxs, get_compress_topk_idxs,
                       get_total_aic_num
                     )
 from .modules import Indexer, Compressor
+from .modules.indexer import MXFP4_SCALE_GROUP_SIZE, MXFP4_SCALE_LANES
 from .modules.registry import OpKernel, auto_import_modules
 logger = logging.get_logger(__name__)
 
@@ -976,7 +977,8 @@ class Attention(nn.Module):
             "int8": torch.int8,
             "float8": torch.float8_e4m3fn,
             "unquant": torch.bfloat16,
-            "hifloat8": torch.uint8
+            "hifloat8": torch.uint8,
+            "mxfloat4": torch.float4_e2m1fn_x2
         }
 
     def _get_cache_dim_and_cmp_dtype(self):
@@ -1017,7 +1019,9 @@ class Attention(nn.Module):
 
         cache_dtype_map = self._get_cache_dtype_map()
         cache_dtype = cache_dtype_map[self.kv_cache_quant_mode]
+        li_mxfp4 = self.li_cache_quant_mode == 'mxfloat4'
         li_cache_dtype = cache_dtype_map[self.li_cache_quant_mode]
+        li_cache_dim = self.config.index_head_dim // 2 if li_mxfp4 else self.config.index_head_dim
 
         if is_packed_kv_layout(self.kv_cache_quant_mode):
             cache_dtype = PACKED_KV_STORAGE_DTYPE
@@ -1062,7 +1066,7 @@ class Attention(nn.Module):
                 CacheEntry(
                     cache_name="li_cmp_kv",
                     attn_type="FullAttention",
-                    dim=self.config.index_head_dim,
+                    dim=li_cache_dim,
                     num_head=1,
                     dtype=li_cache_dtype,
                     needs_block=True,
@@ -1095,13 +1099,16 @@ class Attention(nn.Module):
                     tensor_setter=self._make_cache_setter("li_kv_state"),
                     sliding_window=8,
                 )])
-            if self.li_cache_quant_mode in ["int8", "float8", "hifloat8"]:
+            if self.li_cache_quant_mode in ["int8", "float8", "hifloat8", "mxfloat4"]:
                 dtype = torch.float16 if self.li_cache_quant_mode == "int8" else torch.float32
+                if li_mxfp4:
+                    dtype = torch.uint8
+                scale_dim = self.config.index_head_dim // 32 if li_mxfp4 else 1
                 self.cache_entries.extend([
                     CacheEntry(
                         cache_name="li_key_dequant_scale",
                         attn_type="FullAttention",
-                        dim=1,
+                        dim=scale_dim,
                         num_head=1,
                         dtype=dtype,
                         needs_block=True,
@@ -2322,6 +2329,14 @@ class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel):
         gmm_quant_mode = quant_config.gmm_quant_mode if quant_config is not None else "w16a16"
         if gmm_quant_mode == "w4a4mxfloat4" and not infer_config.model_config.platform_version.is_ascend_950():
             raise ValueError("A4W4 MXFP4 MoE is only supported on Ascend 950")
+        # Reject MXFP4 LI cache whose E8M0 scale lanes cannot be built.
+        li_cache_quant_mode = quant_config.li_cache_quant_mode if quant_config is not None else None
+        if li_cache_quant_mode is not None and "float4" in li_cache_quant_mode \
+                and config.index_head_dim % (MXFP4_SCALE_GROUP_SIZE * MXFP4_SCALE_LANES):
+            raise ValueError(
+                f"mxfloat4 LI cache requires index_head_dim divisible by "
+                f"{MXFP4_SCALE_GROUP_SIZE * MXFP4_SCALE_LANES}, got {config.index_head_dim}"
+            )
 
     def __init__(
         self,
@@ -2638,16 +2653,18 @@ class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel):
         return self.model
 
     def update_kv_quant_settings(self):
-        # set li_cache_quant_mode to quant_config
-        self.config.quant_config.set_quant_mode("li_cache_quant_mode", "unquant")
-
-        # if quant to fp8 or mxfp8, set kv cache and li cache to fp8; if quant to int8, set li cache to int8
+        # if quant to hif8/fp8/mxfp8, set kv cache and li cache accordingly; if quant to int8, set li cache to int8
         if self.platform_version == PlatformVersion.ASCEND_950 and "hifloat" in self.mm_quant_mode:
             self.config.quant_config.kv_cache_quant_mode = "hifloat8"
             self.config.quant_config.li_cache_quant_mode = "hifloat8"
         elif self.platform_version == PlatformVersion.ASCEND_950 and "float" in self.mm_quant_mode:
             self.config.quant_config.kv_cache_quant_mode = "float8"
-            self.config.quant_config.li_cache_quant_mode = "float8"
+            if (self.config.quant_config.li_cache_quant_mode is None or
+                    self.config.quant_config.li_cache_quant_mode == "unquant"):
+                self.config.quant_config.li_cache_quant_mode = "float8"
+            elif "float4" in self.config.quant_config.li_cache_quant_mode:
+                # MXFP4 LI cache is independent of the Linear weight quant mode.
+                self.config.quant_config.li_cache_quant_mode = "mxfloat4"
         else:
             self.config.quant_config.li_cache_quant_mode = "int8"
 
@@ -2874,12 +2891,15 @@ class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel):
         return sas_metadata_kwargs
 
     def generate_li_metadata_kwargs(self):
-        # Lightning Indexer quant modes: 1: FP8 E4M3, 2: INT8, 4: HiFloat8.
+        # Lightning Indexer quant modes: 1: FP8, 2: INT8, 4: HiFloat8,
+        # 5: mxfloat4.
         quant_mode = 1
         if self.li_cache_quant_mode == "int8":
             quant_mode = 2
         elif self.li_cache_quant_mode == "hifloat8":
             quant_mode = 4
+        elif self.li_cache_quant_mode == "mxfloat4":
+            quant_mode = 5
         li_metadata_kwargs = {
             "layout_k": "PA_BBND",
             "topk": self.config.index_topk,
@@ -2925,7 +2945,7 @@ class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel):
                 record_event(enable_metadata_multi_streams and self.first_layer_ratio == 128,
                              attn_metadata.get('metadata_event'), 1)
                 self.generate_metadata(attn_metadata, c4a_metadata_kwargs, is_prefill, "c4a_metadata")
-                if self.li_cache_quant_mode in ["int8", "float8", "hifloat8"]:
+                if self.li_cache_quant_mode in ["int8", "float8", "hifloat8", "mxfloat4"]:
                     li_metadata_kwargs = self.generate_li_metadata_kwargs()
                     self.generate_metadata(attn_metadata, li_metadata_kwargs,\
                                             is_prefill, "lightning_indexer_quant", is_li=True)
