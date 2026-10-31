@@ -1,6 +1,6 @@
 # NPU Prefetch Principles
 
-This document describes the background of weight prefetching on Ascend NPUs, the associated hardware and API semantics, implementation in model code, and representative Prefetch optimizations already deployed in LongCat-Flash.
+This document describes the background of weight prefetching on Ascend NPUs, the associated hardware and API semantics, implementation in model code, and representative Prefetch optimizations already deployed in LongCat-Flash and DeepSeek-V4.
 
 ## 1. Background
 
@@ -249,7 +249,7 @@ gmm2_prefetch_size = (
 )
 ```
 
-## 4. Concrete Model Example
+## 4. Concrete Model Examples
 
 ### 4.1 LongCat-Flash: Attention and Dense Weight Prefetching
 
@@ -385,3 +385,89 @@ block-beta
 <div align="center">Figure 6. MLAProlog weight prefetching during Decode.</div>
 
 The target of this prefetch is MLAProlog at the attention entry, not `fused_infer_attention_score`. The benefit depends on whether a stable window exists between Dense MLP output and MLAProlog launch. Re-profile if multi-stream execution, AFD, `npugraph_ex`, or graph-mode strategy changes the intra-layer timing.
+
+### 4.2 DeepSeek-V4: Attention and lm_head Weight Prefetching
+
+DeepSeek-V4 enables weight prefetching for both A3 and ASCEND_950 in `models/deepseek_v4/models/modeling_deepseek.py`. Prefetch points and sizes for each platform are configured centrally in `PREFETCH_PLATFORM_CONFIGS` at the top of the model file: one dictionary per platform, giving each point's prefetch size as `*_FIXED_SIZE` (fixed bytes) or `*_RATIO` (a fraction of the weight):
+
+```python
+PREFETCH_PLATFORM_CONFIGS = {
+    PlatformVersion.A3: {
+        "WQ_A_FIXED_SIZE": 2 * 1024 * 1024,   # wq_a: fixed 2MB
+        ...
+    },
+    PlatformVersion.ASCEND_950: {
+        "WQ_A_RATIO": 0.8,                    # wq_a: 0.8 of the weight
+        ...
+    },
+}
+```
+
+The concrete values of each point are given in 4.2.1 and 4.2.2.
+
+| Semantics | Description |
+| --- | --- |
+| Prefetch size | A positive `FIXED_SIZE` prefetches a fixed number of bytes; otherwise the size is `weight bytes × RATIO`. The actual weight is read at runtime, adapting to TP partitioning and the quantization dtype. |
+| Point enablement | A point with a positive configured size is enabled; unconfigured points issue no prefetch, and there is no separate per-point switch. |
+| lm_head shard boundary | The prefetch target is the per-rank shard (full size ÷ `lmhead_tp_size`); when `lmhead_tp_size ≥ 16`, the shard approaches or falls below 64MB, so clamp with `min(prefetch size, shard bytes)` before extending to larger tp configurations. |
+
+Prefetching takes effect only when `exe_mode: npugraph_ex`, `enable_multi_streams: True`, and `enable_prefetch: True` are all satisfied, and every point issues prefetches only during Decode.
+
+Streams and events are organized as follows: each model instance explicitly creates one prefetch stream shared by all points of that platform; event slots are allocated per consuming module — each Attention holds 4 event slots (0 = wq_a, 1 = wq_b, 2 = wo_a, 3 = wo_b), while lm_head prefetching uses a separate slot to avoid cross-module contention. The synchronization design follows the one-way dependency of Section 3.2.2 and adds a tail sync at two key consumption boundaries: after the layer loop and before hc_head (A3), and after the lm_head matmul is consumed (both platforms, at the end of `forward_lm_head`), preventing residual prefetches from competing with subsequent memory accesses.
+
+At the call sites, the parameters of each point are wrapped in a `PrefetchTarget` (weight, depend, ratio, fixed_size), and a single `_prefetch_weight` performs the event synchronization and issues the prefetch; no prefetch is issued when the stream is missing or the size is invalid:
+
+```python
+@dataclass
+class PrefetchTarget:
+    weight: torch.Tensor
+    depend: torch.Tensor
+    ratio: float = 0.0
+    fixed_size: int = 0
+
+def _prefetch_weight(pf_stream, pf_events, event_idx, target: PrefetchTarget):
+    if target.fixed_size > 0:
+        pf_size = target.fixed_size
+    else:
+        pf_size = int(target.weight.numel() * target.weight.element_size() * target.ratio)
+    if pf_stream is None or pf_size <= 0:
+        return
+    pf_events[event_idx].record()
+    with npu_stream_switch(True, pf_stream):
+        pf_events[event_idx].wait()
+        npu_prefetch(True, target.weight, target.depend, pf_size, 0)
+```
+
+#### 4.2.1 Per-Point Prefetching in the Attention Stage
+
+A3 issues one prefetch in each of the norm, rotary, communication, and quantization windows of the Attention stage; ASCEND_950 prefetches only wq_a/wq_b at a 0.8 ratio, and wo_a/wo_b are not prefetched. The issue points and overlap windows are listed below; `depend` is always the preceding output Tensor at the window entry:
+
+| Point | Target weight | Issue point | A3 | ASCEND_950 | Overlap window |
+| --- | --- | --- | --- | --- | --- |
+| P_WQ_A | `wq_a.weight` | In `DecoderLayer.forward`, after HcPre(attn) and before attn_norm (depend = hidden_states) | 2MB | 0.8 ratio | attn_norm |
+| P_WQ_B | `wq_b.weight` | In `mla_prolog_decode`, after the wq_a computation and before apply_norm_dynamic_quant (depend = qa) | 2MB | 0.8 ratio | norm + wkv (parallel on mla_stream) + rotary |
+| P_WO_A | `wo_a.weight` | In `attn_post`, before rotary (depend = o) | 6MB | — | rotary + all2all communication |
+| P_WO_B | `wo_b.weight` | In `attn_post`, after the wo_a computation and before the wo_b call (depend = o) | 2MB | — | `npu_dynamic_mx_quant` inside wo_b.forward |
+
+#### 4.2.2 lm_head Slice Prefetching
+
+The lm_head weight is large, and weight reads dominate the lm_head matmul at the Decode tail. Both platforms use the same mechanism: prefetch a fixed 64MB slice of the per-rank shard. The prefetch point is inside `hc_head`, after sigmoid and before the weighted sum, with the sigmoid output as `depend`; the prefetch overlaps the weighted sum, norm, and allgather. The consumer is the lm_head matmul in `forward_lm_head`, and the prefetch stream is drained after consumption.
+
+```mermaid
+block-beta
+  columns 17
+  s0["Main stream"]:1 lin["hc_head linear"]:3 sig["sigmoid"]:2 sum["weighted sum"]:3 n["norm"]:2 ag["allgather"]:3 lm["lm_head matmul"]:3
+  s1["Prefetch"]:1 space:5 p["lm_head slice 64MB"]:8 space:3
+
+  p --> lm
+
+  classDef hdr fill:#eee,stroke:#999,color:#000
+  classDef main fill:#5B9BD5,color:#fff,stroke:#1F4E79
+  classDef pre fill:#70AD47,color:#fff,stroke:#385723
+
+  class s0,s1 hdr
+  class lin,sig,sum,n,ag,lm main
+  class p pre
+```
+
+<div align="center">Figure 7. lm_head slice prefetching at the Decode tail.</div>

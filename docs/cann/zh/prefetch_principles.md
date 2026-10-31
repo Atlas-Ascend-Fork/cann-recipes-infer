@@ -1,6 +1,6 @@
 # NPU Prefetch 原理
 
-本文档说明昇腾 NPU 上权重预取的背景、硬件与接口语义、模型代码中的实现方式，以及 LongCat-Flash 中已经落地的典型 Prefetch 优化案例。
+本文档说明昇腾 NPU 上权重预取的背景、硬件与接口语义、模型代码中的实现方式，以及 LongCat-Flash 与 DeepSeek-V4 中已经落地的典型 Prefetch 优化案例。
 
 ## 1. 背景
 
@@ -375,3 +375,87 @@ block-beta
 ```
 
 这类预取的目标不是 `fused_infer_attention_score`，而是 attention 入口处的 MLAProlog。收益取决于 Dense MLP 输出到 MLAProlog 启动之间是否存在稳定窗口；如果多流、AFD、`npugraph_ex` 或图模式策略改变了层内时序，需要重新 profiling。
+
+### 4.2 DeepSeek-V4：Attention / lm_head 权重预取
+
+DeepSeek-V4 在 `models/deepseek_v4/models/modeling_deepseek.py` 中为 A3 与 ASCEND_950 接入权重预取。各平台的预取点与预取大小通过模型文件顶部的 `PREFETCH_PLATFORM_CONFIGS` 集中配置，每个平台一个字典，以 `*_FIXED_SIZE`（固定字节数）或 `*_RATIO`（权重比例）给出各点位的预取大小：
+
+```python
+PREFETCH_PLATFORM_CONFIGS = {
+    PlatformVersion.A3: {
+        "WQ_A_FIXED_SIZE": 2 * 1024 * 1024,   # wq_a 预取固定 2MB
+        ...
+    },
+    PlatformVersion.ASCEND_950: {
+        "WQ_A_RATIO": 0.8,                    # wq_a 按 0.8 比例预取
+        ...
+    },
+}
+```
+
+各点位的具体取值见 4.2.1 与 4.2.2。
+
+| 配置语义 | 说明 |
+| --- | --- |
+| 预取大小 | `FIXED_SIZE > 0` 时预取固定字节数，否则按 `权重字节数 × RATIO` 计算；运行时读取实际权重，自动适应 TP 切分与量化 dtype |
+| 点位启停 | 配置了正的预取大小即启用，未配置的点位不产生 CMO，不设独立的点位开关 |
+| lm_head 分片边界 | 预取对象为本卡分片（全量 ÷ `lmhead_tp_size`）；`lmhead_tp_size ≥ 16` 时分片逼近或小于 64MB，需按 `min(预取大小, 分片字节数)` 限制后再扩展到更大的 tp 配置 |
+
+生效需同时满足 `exe_mode: npugraph_ex`、`enable_multi_streams: True` 与 `enable_prefetch: True`，且全部点位仅在 Decode 阶段下发。
+
+流与事件的组织方式为：每个模型实例显式创建一条预取流，该平台的全部点位共用；事件槽按消费模块分配，每个 Attention 持有 4 个事件槽（0 = wq_a、1 = wq_b、2 = wo_a、3 = wo_b），lm_head 预取使用独立事件槽，避免跨模块争用。同步设计沿用 3.2.2 节的单向依赖，并在两个关键消费边界增加尾部同步：层循环结束后、hc_head 之前（A3），以及 lm_head matmul 消费之后（两平台，`forward_lm_head` 末尾），避免残余 CMO 与后续访存竞争。
+
+调用形态上，各点位参数封装为 `PrefetchTarget`（weight、depend、ratio、fixed_size），由统一的 `_prefetch_weight` 完成事件同步与 CMO 下发；流缺失或预取大小无效时不产生 CMO：
+
+```python
+@dataclass
+class PrefetchTarget:
+    weight: torch.Tensor
+    depend: torch.Tensor
+    ratio: float = 0.0
+    fixed_size: int = 0
+
+def _prefetch_weight(pf_stream, pf_events, event_idx, target: PrefetchTarget):
+    if target.fixed_size > 0:
+        pf_size = target.fixed_size
+    else:
+        pf_size = int(target.weight.numel() * target.weight.element_size() * target.ratio)
+    if pf_stream is None or pf_size <= 0:
+        return
+    pf_events[event_idx].record()
+    with npu_stream_switch(True, pf_stream):
+        pf_events[event_idx].wait()
+        npu_prefetch(True, target.weight, target.depend, pf_size, 0)
+```
+
+#### 4.2.1 Attention 段逐点位预取
+
+A3 在 Attention 段的 norm、rotary、通信、量化窗口内各下发一个 CMO；ASCEND_950 仅对 wq_a/wq_b 采用 0.8 比例预取，wo_a/wo_b 不预取。各点位的预取时机与重叠窗口如下，depend 均取窗口入口处的前序输出 Tensor：
+
+| 预取点 | 目标权重 | 预取时机 | A3 | ASCEND_950 | 重叠窗口 |
+| --- | --- | --- | --- | --- | --- |
+| P_WQ_A | `wq_a.weight` | `DecoderLayer.forward`，HcPre(attn) 之后、attn_norm 之前（depend = hidden_states） | 2MB | 0.8 比例 | attn_norm |
+| P_WQ_B | `wq_b.weight` | `mla_prolog_decode`，wq_a 计算之后、apply_norm_dynamic_quant 之前（depend = qa） | 2MB | 0.8 比例 | norm + wkv（mla_stream 并行）+ rotary |
+| P_WO_A | `wo_a.weight` | `attn_post`，rotary 之前（depend = o） | 6MB | — | rotary + all2all 通信 |
+| P_WO_B | `wo_b.weight` | `attn_post`，wo_a 计算之后、wo_b 调用之前（depend = o） | 2MB | — | wo_b.forward 内 `npu_dynamic_mx_quant` |
+
+#### 4.2.2 lm_head 切片预取
+
+lm_head 权重规模大，Decode 尾部 lm_head matmul 的权重读取占比高，两平台采用同一机制：以 64MB 固定切片预取本卡分片。预取点位于 `hc_head` 内 sigmoid 之后、加权求和之前，depend 取 sigmoid 输出；CMO 与加权求和、norm、allgather 重叠，消费点为 `forward_lm_head` 中的 lm_head matmul，消费完成后对预取流做尾部同步。
+
+```mermaid
+block-beta
+  columns 17
+  s0["主执行流"]:1 lin["hc_head linear"]:3 sig["sigmoid"]:2 sum["加权求和"]:3 n["norm"]:2 ag["allgather"]:3 lm["lm_head matmul"]:3
+  s1["Prefetch"]:1 space:5 p["lm_head 分片切片 64MB"]:8 space:3
+
+  p --> lm
+
+  classDef hdr fill:#eee,stroke:#999,color:#000
+  classDef main fill:#5B9BD5,color:#fff,stroke:#1F4E79
+  classDef pre fill:#70AD47,color:#fff,stroke:#385723
+
+  class s0,s1 hdr
+  class lin,sig,sum,n,ag,lm main
+  class p pre
+```

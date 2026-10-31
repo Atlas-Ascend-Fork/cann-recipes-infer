@@ -215,6 +215,7 @@ docker run -u root -itd --name cann_recipes_infer --ulimit nproc=65535:65535 --i
   | `enable_pypto` | bool | `false` | 启用 PyPTO 算子路径；当前与 `enable_limit_core` 互斥。 |
   | `moe_chunk_max_len` | int | `65536` | MoE token 分发的最大 chunk 长度，用于长序列 prefill 场景规避 OOM。 |
   | `low_latency_tp` | bool | `false` | 启用低时延推理模式，适用于单请求、小 batch size 的部署场景。 |
+  | `enable_prefetch` | bool | `false` | 启用权重预取，Decode 阶段通过独立预取流提前将访存受限算子的权重从 HBM 搬入 L2 Cache，使权重搬运与主流计算重叠；要求 `enable_multi_streams=True` 且 `exe_mode=npugraph_ex`，仅支持 Atlas A3 与 Ascend 950。各平台的预取点设计与预取大小详见[NPU Prefetch 原理](../../docs/cann/zh/prefetch_principles.md)的 DeepSeek-V4 章节。 |
 
   > CANNLab一站式开发平台 A3 场景请使用 `ci_a3/deepseek_v4_flash_rank_16_16ep_w8a8_platform.yaml`，详见[CANNLab一站式开发平台指南](#cannlab一站式开发平台指南)。
 

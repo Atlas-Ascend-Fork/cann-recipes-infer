@@ -45,7 +45,8 @@ from module.fuse_moe_gmm import FusedMoEGMM
 from module.linear import ColumnParallelLinear, ReplicatedLinear, VocabParallelEmbedding
 
 from .configuration_deepseek import DeepseekV3Config
-from .modeling_deepseek import Attention, DeepseekV3ForCausalLM, DeepseekV3Model, DeepseekV3MoE
+from .modeling_deepseek import (PREFETCH_ATTN_EVENT_NUM, Attention, DeepseekV3ForCausalLM,
+                                DeepseekV3Model, DeepseekV3MoE)
 from .modules import DeepseekV3RMSNorm
 from .modules.registry import OpKernel
 
@@ -828,6 +829,11 @@ class DeepseekV4DSparkProposalModel(DeepseekV3ForCausalLM):
             DeepseekV4DSparkProposalLayer(config, infer_config, stage_idx, **dspark_kwargs)
             for stage_idx in range(self.dspark_num_layers)
         ])
+        # wire the ForCausalLM prefetch stream into the proposal blocks
+        if self.prefetch_stream is not None:
+            for block in self.mtp:
+                block.attn.prefetch_stream = self.prefetch_stream
+                block.attn.prefetch_events = [torch.npu.Event() for _ in range(PREFETCH_ATTN_EVENT_NUM)]
 
     def _build_decoder(self, config: DeepseekV3Config, prefix: str, **kwargs):
         return DSparkInputModel(

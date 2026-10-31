@@ -51,7 +51,7 @@ from executor.utils import (
     get_decode_mask)
 
 from executor.model_loader.weight_utils import default_weight_loader
-from executor.utils import superkernel_scope, weight_dequant
+from executor.utils import superkernel_scope, weight_dequant, npu_prefetch
 from executor.utils.stream_utils import (
     limit_core_num, npu_stream_switch, record_event, wait_event, record_stream)
 from executor.core.config import InferenceConfig, CommManager, PlatformVersion
@@ -94,6 +94,58 @@ logger = logging.get_logger(__name__)
 
 HADAMARD_SIZE = 128
 MATMUL_MAX_AXIS_VALUE = 65535
+
+# Prefetch platform config (tweak here for tuning; fixed_size > 0 overrides ratio)
+PREFETCH_PLATFORM_CONFIGS = {
+    # A3
+    PlatformVersion.A3: {
+        "WQ_A_FIXED_SIZE": 2 * 1024 * 1024,
+        "WQ_B_FIXED_SIZE": 2 * 1024 * 1024,
+        "WO_A_FIXED_SIZE": 6 * 1024 * 1024,
+        "WO_B_FIXED_SIZE": 2 * 1024 * 1024,
+        "LM_HEAD_FIXED_SIZE": 64 * 1024 * 1024,
+    },
+    # Ascend 950
+    PlatformVersion.ASCEND_950: {
+        "WQ_A_RATIO": 0.8,
+        "WQ_B_RATIO": 0.8,
+        "LM_HEAD_FIXED_SIZE": 64 * 1024 * 1024,
+    },
+}
+
+# Shared per-attention event slots: 0 = wq_a, 1 = wq_b, 2 = wo_a, 3 = wo_b
+PREFETCH_ATTN_EVENT_NUM = 4
+
+
+@dataclass
+class PrefetchTarget:
+    weight: torch.Tensor
+    depend: torch.Tensor
+    ratio: float = 0.0
+    fixed_size: int = 0
+
+
+# Issue CMO (HBM -> L2) on the prefetch stream; no-op without stream or positive size.
+def _prefetch_weight(pf_stream, pf_events, event_idx, target: PrefetchTarget):
+    if target.fixed_size > 0:
+        pf_size = target.fixed_size
+    else:
+        pf_size = int(target.weight.numel() * target.weight.element_size() * target.ratio)
+    if pf_stream is None or pf_size <= 0:
+        return
+    pf_events[event_idx].record()
+    with npu_stream_switch(True, pf_stream):
+        pf_events[event_idx].wait()
+        npu_prefetch(True, target.weight, target.depend, pf_size, 0)
+
+
+# Tail sync: main stream waits for the prefetch stream's queued CMOs.
+def _drain_prefetch_stream(pf_stream):
+    if pf_stream is None:
+        return
+    with npu_stream_switch(True, pf_stream):
+        prefetch_done_event = torch.npu.current_stream().record_event()
+    torch.npu.current_stream().wait_event(prefetch_done_event)
 
 
 def get_max_position_embeddings(infer_config: InferenceConfig, is_mtp: bool = False):
@@ -249,6 +301,8 @@ class DeepseekV3MoE(nn.Module):
         self.platform_version = self.infer_config.model_config.platform_version
         self.exe_mode = self.infer_config.model_config.exe_mode
         self.enable_multi_streams = self.infer_config.model_config.custom_params.get("enable_multi_streams", False)
+        self.enable_prefetch = self.infer_config.model_config.custom_params.get("enable_prefetch", False) \
+            and self.exe_mode == "npugraph_ex"
         self.force_eplb = self.infer_config.model_config.force_eplb
         self.num_experts_per_tok = config.num_experts_per_tok
         # total experts num
@@ -827,6 +881,7 @@ class Attention(nn.Module):
         # enable_multi_streams: multistream within current class
         self.enable_multi_streams = self.enable_global_multi_streams and not self.enable_pypto
         self.platform_version = self.infer_config.model_config.platform_version
+        self.exe_mode = self.infer_config.model_config.exe_mode
         self.layer_idx = layer_idx
         self.is_mtp = False
         if layer_idx == config.num_hidden_layers:
@@ -838,6 +893,20 @@ class Attention(nn.Module):
             self.mla_events = [torch.npu.Event(), torch.npu.Event(), torch.npu.Event(), torch.npu.Event()]
 
         self.enable_limit_core = self.infer_config.model_config.custom_params.get("enable_limit_core", False)
+        self.enable_prefetch = self.infer_config.model_config.custom_params.get("enable_prefetch", False) \
+            and self.exe_mode == "npugraph_ex"
+        pf_cfg = PREFETCH_PLATFORM_CONFIGS.get(self.platform_version, {})
+        # unconfigured points read as zero sizes; _prefetch_weight no-ops on those
+        self.wq_a_prefetch_ratio = pf_cfg.get("WQ_A_RATIO", 0.0)
+        self.wq_a_prefetch_fixed_size = pf_cfg.get("WQ_A_FIXED_SIZE", 0)
+        self.wq_b_prefetch_ratio = pf_cfg.get("WQ_B_RATIO", 0.0)
+        self.wq_b_prefetch_fixed_size = pf_cfg.get("WQ_B_FIXED_SIZE", 0)
+        self.wo_a_prefetch_ratio = pf_cfg.get("WO_A_RATIO", 0.0)
+        self.wo_a_prefetch_fixed_size = pf_cfg.get("WO_A_FIXED_SIZE", 0)
+        self.wo_b_prefetch_ratio = pf_cfg.get("WO_B_RATIO", 0.0)
+        self.wo_b_prefetch_fixed_size = pf_cfg.get("WO_B_FIXED_SIZE", 0)
+        self.prefetch_stream = None
+        self.prefetch_events = None   # injected per strategy, see PREFETCH_ATTN_EVENT_NUM
         self.compress_ratio = 1 if self.is_mtp else config.compress_ratios[layer_idx]
         if self.enable_multi_streams and self.platform_version in (PlatformVersion.A3, PlatformVersion.ASCEND_950):
             self.enable_compressor_parallel = self.compress_ratio == 128
@@ -1445,6 +1514,13 @@ class Attention(nn.Module):
         if self.platform_version != PlatformVersion.A3:
             qa = self.wq_a(x)
 
+        # P_WQ_B: prefetch wq_b weight
+        if self.enable_prefetch and not is_prefill:
+            _prefetch_weight(self.prefetch_stream, self.prefetch_events, 1,
+                             PrefetchTarget(self.wq_b.weight.data, qa,
+                                            ratio=self.wq_b_prefetch_ratio,
+                                            fixed_size=self.wq_b_prefetch_fixed_size))
+
         qr, qr_scale = self.apply_norm_dynamic_quant(qa)
 
         cur_stream = torch.npu.current_stream()
@@ -1724,6 +1800,13 @@ class Attention(nn.Module):
             cos = cos_sin["c1a"][0] if self.compress_ratio == 1 else cos_sin["comp"][0]
             sin = cos_sin["c1a_neg_sin"] if self.compress_ratio == 1 else cos_sin["comp_neg_sin"]
 
+        # P_WO_A: prefetch wo_a weight
+        if self.enable_prefetch and not is_prefill:
+            _prefetch_weight(self.prefetch_stream, self.prefetch_events, 2,
+                             PrefetchTarget(self.wo_a.weight.data, o,
+                                            ratio=self.wo_a_prefetch_ratio,
+                                            fixed_size=self.wo_a_prefetch_fixed_size))
+
         if self.mm_quant_mode == "w8a8hifloat8":
             o = partial_rotary_mul_quant(
                 o.unsqueeze(2), cos, sin,
@@ -1780,6 +1863,13 @@ class Attention(nn.Module):
         else:
             o = o.view(num_tokens, -1)
 
+        # P_WO_B: prefetch wo_b weight
+        if self.enable_prefetch and not is_prefill:
+            _prefetch_weight(self.prefetch_stream, self.prefetch_events, 3,
+                             PrefetchTarget(self.wo_b.weight.data, o,
+                                            ratio=self.wo_b_prefetch_ratio,
+                                            fixed_size=self.wo_b_prefetch_fixed_size))
+
         # o_b_proj
         x = self.wo_b(o)
 
@@ -1826,6 +1916,7 @@ class DeepseekV3DecoderLayer(nn.Module):
         self.infer_config = infer_config
         self.comm_manager = comm_manager
         self.hidden_size = config.hidden_size
+        self.platform_version = infer_config.model_config.platform_version
         self.attn = Attention(
             config=config,
             infer_config=self.infer_config,
@@ -1870,6 +1961,8 @@ class DeepseekV3DecoderLayer(nn.Module):
         self.attn_norm = DeepseekV3RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.ffn_norm = DeepseekV3RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.norm_eps = config.rms_norm_eps
+        self.enable_prefetch = infer_config.model_config.custom_params.get("enable_prefetch", False) \
+            and infer_config.model_config.exe_mode == "npugraph_ex"
 
         if self.attn.mm_quant_mode == "w8a8hifloat8":
             self.register_buffer("attn_norm_beta",
@@ -1893,6 +1986,13 @@ class DeepseekV3DecoderLayer(nn.Module):
         hidden_states, post, comb = OpKernel.hc_pre(hidden_states, self.hc_attn_fn, self.hc_attn_scale,
                                                     self.hc_attn_base, self.hc_mult, self.hc_sinkhorn_iters,
                                                     self.norm_eps, self.hc_eps)
+
+        # P_WQ_A: prefetch wq_a weight
+        if self.enable_prefetch and not is_prefill:
+            _prefetch_weight(self.attn.prefetch_stream, self.attn.prefetch_events, 0,
+                             PrefetchTarget(self.attn.wq_a.weight.data, hidden_states,
+                                            ratio=self.attn.wq_a_prefetch_ratio,
+                                            fixed_size=self.attn.wq_a_prefetch_fixed_size))
 
         if self.attn.mm_quant_mode == "w8a8hifloat8" and self.attn.cp_size == 1:
             hidden_states = torch_npu.npu_rms_norm_quant(
@@ -1964,6 +2064,7 @@ class DeepseekV3Model(DeepseekV3PreTrainedModel):
         self.global_rank = kwargs.get("global_rank")
         self.enable_superkernel = self.infer_config.model_config.custom_params.get("enable_superkernel", False)
         self.enable_multi_streams = self.infer_config.model_config.custom_params.get("enable_multi_streams", False)
+        self.platform_version = self.infer_config.model_config.platform_version
         self.collect_layer_ids = frozenset()
         self.world_size = self.infer_config.parallel_config.world_size
         self.max_position_embeddings = get_max_position_embeddings(
@@ -1975,6 +2076,19 @@ class DeepseekV3Model(DeepseekV3PreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
         _init_rope(self)
+
+        enable_prefetch = self.infer_config.model_config.custom_params.get("enable_prefetch", False) \
+            and self.infer_config.model_config.exe_mode == "npugraph_ex"
+        self.prefetch_stream = None
+        # lm_head prefetch resolves its state via lm_head_ref (wired by ForCausalLM)
+        self.lm_head_ref = None
+        if enable_prefetch and self.enable_multi_streams and not kwargs.get("is_mtp") \
+                and self.platform_version == PlatformVersion.A3:
+            self.prefetch_stream = torch.npu.Stream()
+            # inject the stream and the shared event table into each attention
+            for layer in self.layers:
+                layer.attn.prefetch_stream = self.prefetch_stream
+                layer.attn.prefetch_events = [torch.npu.Event() for _ in range(PREFETCH_ATTN_EVENT_NUM)]
 
     def _init_decoder(self, config: DeepseekV3Config, **kwargs):
         """Construct decoder parameters; input-only subclasses override this hook."""
@@ -2024,12 +2138,26 @@ class DeepseekV3Model(DeepseekV3PreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
-    def hc_head(self, x: torch.Tensor, hc_fn: torch.Tensor, hc_scale: torch.Tensor, hc_base: torch.Tensor):
+    def maybe_prefetch_lm_head(self, depend: torch.Tensor, is_prefill: bool):
+        """Prefetch an lm_head slice; no-op unless wired in via lm_head_ref."""
+        if is_prefill or self.lm_head_ref is None:
+            return
+        parent = self.lm_head_ref[0]
+        if parent.lm_head_prefetch_events is None:
+            return
+        _prefetch_weight(parent.prefetch_stream, parent.lm_head_prefetch_events, 0,
+                         PrefetchTarget(parent.lm_head.weight.data, depend,
+                                        fixed_size=parent.lm_head_prefetch_size))
+
+    def hc_head(self, x: torch.Tensor, hc_fn: torch.Tensor, hc_scale: torch.Tensor,
+                hc_base: torch.Tensor, is_prefill: bool = False):
         shape, dtype = x.size(), x.dtype
         x = x.flatten(1).float()
         rsqrt = torch.rsqrt(x.square().mean(-1, keepdim=True) + self.norm_eps)
         mixes = F.linear(x, hc_fn) * rsqrt
         pre = torch.sigmoid(mixes * hc_scale + hc_base) + self.hc_eps
+        # P_LM_HEAD: prefetch lm_head slice
+        self.maybe_prefetch_lm_head(pre, is_prefill)
         y = torch.sum(pre.unsqueeze(-1) * x.view(shape), dim=1)
         return y.to(dtype)
 
@@ -2229,10 +2357,14 @@ class DeepseekV3Model(DeepseekV3PreTrainedModel):
                 )
                 if layer_idx in self.collect_layer_ids:
                     collected_hidden_states.append(hidden_states.mean(dim=1))
+        # tail sync (A3): drain prefetch CMOs before hc_head
+        if not is_prefill:
+            _drain_prefetch_stream(self.prefetch_stream)
         # MTP consumes the full residual stream before HC reduction and norm.
         # Keep one row per token across the worker boundary: [T, hc_mult * H].
         prev_hidden_states = hidden_states.flatten(1)
-        hidden_states = self.hc_head(hidden_states, self.hc_head_fn, self.hc_head_scale, self.hc_head_base)
+        hidden_states = self.hc_head(hidden_states, self.hc_head_fn, self.hc_head_scale,
+                                     self.hc_head_base, is_prefill)
         hidden_states = self.norm(hidden_states)
         auxiliary_hidden_states = None
         if self.collect_layer_ids:
@@ -2290,7 +2422,8 @@ class DeepseekV3ModelMTPLayer(DeepseekV3Model):
             prefill_moe_global_chunks=prefill_moe_global_chunks,
         )
         prev_hidden_states = hidden_states.flatten(1)
-        hidden_states = self.hc_head(hidden_states, self.hc_head_fn, self.hc_head_scale, self.hc_head_base)
+        hidden_states = self.hc_head(hidden_states, self.hc_head_fn, self.hc_head_scale,
+                                     self.hc_head_base, is_prefill)
         return hidden_states, prev_hidden_states
 
 
@@ -2425,6 +2558,37 @@ class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel):
         self.first_layer_idx = config.num_hidden_layers if is_mtp else 0
         self.first_layer_ratio = self.config.compress_ratios[self.first_layer_idx]
 
+        # weight prefetch infrastructure: reuse the Model stream if present, else create
+        enable_prefetch = self.infer_config.model_config.custom_params.get("enable_prefetch", False) \
+            and self.enable_npugraph_ex and self.enable_multi_streams
+        pf_cfg = PREFETCH_PLATFORM_CONFIGS.get(self.platform_version, {})
+        pf_points_on = any(v > 0 for v in pf_cfg.values())
+
+        # getattr: DSparkInputModel skips the Model-level defaults
+        self.prefetch_stream = getattr(self.model, 'prefetch_stream', None)
+        self.lm_head_prefetch_events = None
+        self.lm_head_prefetch_size = 0
+
+        if enable_prefetch and pf_points_on:
+            if self.prefetch_stream is None:
+                # no Model-level stream: create one and inject the shared
+                # event table into each attention
+                self.prefetch_stream = torch.npu.Stream()
+                # The DSpark proposal model keeps its blocks in self.mtp and
+                # wires the stream there itself; other models inject layer-wise.
+                if getattr(self, "mtp", None) is None:
+                    for layer in (self.model.layers.values() if is_mtp else self.model.layers):
+                        attn = layer.attn
+                        attn.prefetch_stream = self.prefetch_stream
+                        attn.prefetch_events = [torch.npu.Event() for _ in range(PREFETCH_ATTN_EVENT_NUM)]
+
+            # lm_head: state lives on ForCausalLM, resolved via lm_head_ref
+            lm_head_size = pf_cfg.get("LM_HEAD_FIXED_SIZE", 0)
+            if lm_head_size > 0:
+                self.lm_head_prefetch_events = [torch.npu.Event()]
+                self.lm_head_prefetch_size = lm_head_size
+                self.model.lm_head_ref = [self]
+
     def check_model_settings(self):
         model_config = self.infer_config.model_config
         custom_params = model_config.custom_params
@@ -2485,6 +2649,11 @@ class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel):
             raise ValueError(f"{enable_limit_core=} only supports platforms A3 and 950!")
         if enable_limit_core and enable_pypto:
             raise ValueError(f"{enable_pypto=} does not support {enable_limit_core=}!")
+        if custom_params.get("enable_prefetch", False) and not enable_multi_streams:
+            raise ValueError("enable_prefetch only if enable_multi_streams!")
+        if custom_params.get("enable_prefetch", False) and platform_version not in (
+                PlatformVersion.A3, PlatformVersion.ASCEND_950):
+            raise ValueError("enable_prefetch only supports platforms A3 and Ascend 950!")
         if next_n > 3 and not self.infer_config.speculative_config.uses_method("dspark"):
             raise ValueError(f"{next_n=} must equal or smaller than 3")
 
@@ -2819,6 +2988,10 @@ class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel):
                 self.lmhead_tp_size, bs * q_len, logits.shape[1], -1).permute(1, 2, 0, 3)
             logits = new_logits.reshape(bs * q_len, logits.shape[1], self.config.vocab_size)
         logits = logits.reshape(bs, q_len, -1).float()
+
+        # tail sync (ASCEND_950 / A3 lm_head): drain prefetch CMOs after lm_head consumption
+        if not is_prefill:
+            _drain_prefetch_stream(self.prefetch_stream)
         return logits
 
     def calc_sas_metadata(self, attn_metadata, metadata_kwargs):
